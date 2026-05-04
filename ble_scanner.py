@@ -42,23 +42,47 @@ class BTHomeDevice:
         self.advertisement_count += 1
         
         # Try to decode BTHome data
-        raw_data = bytes(advertisement_data.manufacturer_data.values()) if advertisement_data.manufacturer_data else b''
-        if not raw_data:
-            # Try service data
-            for uuid, data in advertisement_data.service_data.items():
-                raw_data = data
-                break
+        decoded = None
         
-        if raw_data:
-            # Convert to bytes if needed
-            if isinstance(raw_data, (list, tuple)):
-                raw_data = bytes(raw_data)
-            
-            # Try to decode
-            decoded = BTHomeDecoder.decode_advertisement(raw_data)
-            if decoded:
-                self.bthome_data = decoded
-                self._update_sensor_values()
+        # Check manufacturer data for BTHome
+        # Manufacturer data from Bleak includes the company ID and data
+        # We need to check if it contains BTHome data
+        if advertisement_data.manufacturer_data and not decoded:
+            for manufacturer_id, data in advertisement_data.manufacturer_data.items():
+                if isinstance(data, (bytes, bytearray)):
+                    # Manufacturer data might include the BTHome UUID as part of the data
+                    # Try to extract BTHome data from it
+                    bthome_payload = BTHomeDecoder.extract_bthome_data(data)
+                    if bthome_payload is not None:
+                        decoded = BTHomeDecoder.decode_bthome_data(bthome_payload)
+                        if decoded:
+                            break
+                    # Also try to decode directly (in case the data is already the BTHome payload)
+                    else:
+                        try:
+                            decoded = BTHomeDecoder.decode_bthome_data(data)
+                            if decoded:
+                                break
+                        except:
+                            pass
+        
+        # Check service data for BTHome
+        # Service data from Bleak is {uuid: payload} where payload is the data after the UUID
+        if advertisement_data.service_data and not decoded:
+            for uuid, data in advertisement_data.service_data.items():
+                if isinstance(data, (bytes, bytearray)):
+                    # For service data, the payload is already the BTHome data (without UUID)
+                    # Try to decode it directly
+                    try:
+                        decoded = BTHomeDecoder.decode_bthome_data(data)
+                        if decoded:
+                            break
+                    except:
+                        pass
+        
+        if decoded:
+            self.bthome_data = decoded
+            self._update_sensor_values()
         
         # Update name from advertisement if available
         if advertisement_data.local_name:
