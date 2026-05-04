@@ -240,7 +240,7 @@ class BTHomeScanner:
         self.start_time = datetime.now()
         self._scanner = BleakScanner(
             detection_callback=self._process_advertisement,
-            scanning_mode="passive"
+            scanning_mode="active"
         )
         
         logger.info("Starting BTHome scanner...")
