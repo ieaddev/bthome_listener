@@ -26,7 +26,8 @@ from typing import Dict, List, Optional
 from ble_scanner import BTHomeScanner, BTHomeDevice
 from bthome_decoder import BTHomeData
 
-# Configure logging
+# Configure logging - default to WARNING to avoid flashing output
+# Users can enable verbose logging with -v flag
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -272,10 +273,14 @@ def main():
     args = parse_args()
     
     # Configure logging level
+    # basicConfig already set root logger to WARNING by default
     if args.verbose:
+        # Enable verbose logging - show DEBUG and above
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger('bleak').setLevel(logging.DEBUG)
     else:
+        # Default: only show WARNING and above
+        logging.getLogger().setLevel(logging.WARNING)
         logging.getLogger('bleak').setLevel(logging.WARNING)
     
     # Create listener
