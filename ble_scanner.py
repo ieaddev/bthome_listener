@@ -165,7 +165,7 @@ class BTHomeScanner:
         """Default filter: accept all devices with BTHome data"""
         # Check for BTHome UUID in service data
         for uuid in advertisement_data.service_uuids:
-            if uuid.lower() == "fc00" or uuid.lower() == "0000fc00-0000-1000-8000-00805f9b34fb":
+            if uuid.lower() == "fcd2" or uuid.lower() == "0000fcd2-0000-1000-8000-00805f9b34fb":
                 return True
         
         # Check manufacturer data for BTHome
