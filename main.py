@@ -28,7 +28,7 @@ from bthome_decoder import BTHomeData
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout)
@@ -67,9 +67,9 @@ class BTHomeListener:
         """Callback when a BTHome device is detected"""
         logger.debug(f"Device detected: {device.address}")
         
-        # If we have decoded data, log it
+        # If we have decoded data, log it at debug level
         if device.bthome_data:
-            logger.info(f"BTHome data from {device.get_display_name()}: {device.bthome_data}")
+            logger.debug(f"BTHome data from {device.get_display_name()}: {device.bthome_data}")
     
     def _clear_screen(self):
         """Clear the console screen"""
