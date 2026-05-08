@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 from ble_scanner import BTHomeScanner, BTHomeDevice
 from bthome_decoder import BTHomeData
+from database import BTHomeDatabase, DatabaseConfig
 
 # Configure logging - default to WARNING to avoid flashing output
 # Users can enable verbose logging with -v flag
@@ -46,17 +47,31 @@ class BTHomeListener:
     the decoded BTHome data grouped by device.
     """
     
-    def __init__(self, scan_interval: float = 1.0, scan_window: float = 0.5):
+    def __init__(self, scan_interval: float = 1.0, scan_window: float = 0.5,
+                 database_path: Optional[str] = None):
         """
         Initialize the BTHome listener.
         
         Args:
             scan_interval: Time between scan cycles in seconds
             scan_window: Duration of each scan window in seconds
+            database_path: Optional path to SQLite database file.
+                          If provided, data will be persisted to the database.
         """
         self.scan_interval = scan_interval
         self.scan_window = scan_window
-        self.scanner = BTHomeScanner(detection_callback=self._on_device_detected)
+        self.database_path = database_path
+        self.database: Optional[BTHomeDatabase] = None
+        
+        # Initialize database if path is provided
+        if database_path:
+            self.database = BTHomeDatabase(db_path=database_path)
+            self.database.initialize()
+        
+        self.scanner = BTHomeScanner(
+            detection_callback=self._on_device_detected,
+            database=self.database
+        )
         self._running = False
         self._shutdown_event = asyncio.Event()
         
@@ -208,6 +223,11 @@ class BTHomeListener:
         logger.info("Stopping BTHome Listener...")
         self._shutdown_event.set()
         await self.scanner.stop()
+        
+        # Close database connection
+        if self.database:
+            self.database.close()
+        
         self._running = False
     
     def get_device_count(self) -> int:
@@ -258,6 +278,13 @@ Examples:
         help='Disable screen clearing'
     )
     
+    parser.add_argument(
+        '--database',
+        type=str,
+        default=None,
+        help='Path to SQLite database file for persisting data (default: None, no persistence)'
+    )
+    
     return parser.parse_args()
 
 
@@ -279,7 +306,8 @@ def main():
     # Create listener
     listener = BTHomeListener(
         scan_interval=args.scan_interval,
-        scan_window=args.scan_window
+        scan_window=args.scan_window,
+        database_path=args.database
     )
     
     # Handle shutdown signals

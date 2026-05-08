@@ -19,6 +19,11 @@ from bthome_decoder import BTHomeDecoder, BTHomeData
 
 logger = logging.getLogger(__name__)
 
+# Type alias for database store function
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from database import BTHomeDatabase
+
 
 @dataclass
 class BTHomeDevice:
@@ -163,7 +168,8 @@ class BTHomeScanner:
     
     def __init__(self, 
                  device_filter: Optional[Callable[[BLEDevice, AdvertisementData], bool]] = None,
-                 detection_callback: Optional[Callable[[BTHomeDevice], None]] = None):
+                 detection_callback: Optional[Callable[[BTHomeDevice], None]] = None,
+                 database: Optional['BTHomeDatabase'] = None):
         """
         Initialize the BTHome scanner.
         
@@ -172,9 +178,12 @@ class BTHomeScanner:
                           Receives (BLEDevice, AdvertisementData) and returns bool.
             detection_callback: Optional callback called when a BTHome device is detected.
                                Receives BTHomeDevice object.
+            database: Optional BTHomeDatabase instance for persisting data.
+                     If provided, all advertisements will be stored in the database.
         """
         self.device_filter = device_filter
         self.detection_callback = detection_callback
+        self.database = database
         self.devices: Dict[str, BTHomeDevice] = {}
         self._scanner: Optional[BleakScanner] = None
         self._running = False
@@ -240,6 +249,18 @@ class BTHomeScanner:
         if device_obj.bthome_data:
             self.bthome_advertisements += 1
             logger.debug(f"BTHome data from {address}: {device_obj.bthome_data}")
+            
+            # Store in database if configured
+            if self.database and device_obj.bthome_data:
+                try:
+                    self.database.store_advertisement(
+                        address=address,
+                        name=device.name,
+                        bthome_data=device_obj.bthome_data,
+                        timestamp=datetime.now()
+                    )
+                except Exception as e:
+                    logger.error(f"Error storing advertisement in database: {e}")
             
             # Call detection callback if set
             if self.detection_callback:
