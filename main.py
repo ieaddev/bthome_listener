@@ -311,9 +311,6 @@ def main():
         # Ensure clean shutdown
         loop.close()
         sys.exit(1)
-    finally:
-        loop.close()
-
 
 if __name__ == "__main__":
     main()
