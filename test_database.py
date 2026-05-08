@@ -81,11 +81,18 @@ class TestDatabaseInitialization:
             'idx_advertisements_timestamp',
             'idx_sensor_readings_advertisement_id',
             'idx_sensor_readings_name',
-            'idx_sensor_readings_timestamp',
+            'idx_sensor_readings_timestamp_adv',  # Renamed to avoid conflict
+            'idx_sensor_readings_device_name_timestamp',  # New optimized index
+            'idx_sensor_readings_name_device_timestamp',  # New optimized index
+            'idx_sensor_readings_name_timestamp',  # New optimized index
+            'idx_sensor_readings_device_name',  # New optimized index
             'idx_binary_sensor_readings_advertisement_id',
             'idx_binary_sensor_readings_name',
+            'idx_binary_sensor_readings_device_name_timestamp',  # New optimized index
+            'idx_binary_sensor_readings_device_name',  # New optimized index
             'idx_events_advertisement_id',
             'idx_events_device_type',
+            'idx_events_device_type_timestamp',  # New optimized index
             'idx_devices_address'
         ]
         
@@ -631,6 +638,132 @@ class TestTextSensorValues:
         assert len(readings) == 1
         assert readings[0]['value'] is None  # Numeric value should be NULL
         assert readings[0]['value_text'] == "Hello, World!"
+
+
+class TestOptimizedHistoryQueries:
+    """Test optimized history query methods"""
+    
+    def test_get_sensor_history(self, database):
+        """Test optimized sensor history query"""
+        bthome_data = BTHomeData(
+            uuid=0xFCD2,
+            version=2,
+            is_encrypted=False,
+            is_trigger_based=False,
+            sensors=[
+                SensorData(object_id=0x02, name="temperature", value=22.5, unit="°C"),
+                SensorData(object_id=0x03, name="humidity", value=45.0, unit="%"),
+            ]
+        )
+        
+        # Store multiple advertisements
+        for i in range(5):
+            database.store_advertisement(
+                address="AA:BB:CC:DD:EE:FF",
+                name="Device 1",
+                bthome_data=bthome_data
+            )
+        
+        # Get temperature history using optimized method
+        history = database.get_sensor_history(
+            device_address="AA:BB:CC:DD:EE:FF",
+            sensor_name="temperature"
+        )
+        
+        assert len(history) == 5
+        assert all(h['name'] == 'temperature' for h in history)
+        assert all('timestamp' in h for h in history)
+        assert all('device_name' in h for h in history)
+    
+    def test_get_sensor_history_by_name_only(self, database):
+        """Test getting sensor history by name only (all devices)"""
+        bthome_data = BTHomeData(
+            uuid=0xFCD2,
+            version=2,
+            is_encrypted=False,
+            is_trigger_based=False,
+            sensors=[
+                SensorData(object_id=0x02, name="temperature", value=22.5, unit="°C"),
+            ]
+        )
+        
+        # Store for two devices
+        database.store_advertisement(
+            address="AA:BB:CC:DD:EE:FF",
+            name="Device 1",
+            bthome_data=bthome_data
+        )
+        database.store_advertisement(
+            address="11:22:33:44:55:66",
+            name="Device 2",
+            bthome_data=bthome_data
+        )
+        
+        # Get all temperature readings
+        history = database.get_sensor_history(sensor_name="temperature")
+        
+        assert len(history) == 2
+        assert all(h['name'] == 'temperature' for h in history)
+    
+    def test_get_binary_sensor_history(self, database):
+        """Test optimized binary sensor history query"""
+        bthome_data = BTHomeData(
+            uuid=0xFCD2,
+            version=2,
+            is_encrypted=False,
+            is_trigger_based=False,
+            binary_sensors=[
+                BinarySensorData(object_id=0x11, name="motion", value=True),
+            ]
+        )
+        
+        # Store multiple advertisements
+        for i in range(3):
+            database.store_advertisement(
+                address="AA:BB:CC:DD:EE:FF",
+                name="Device 1",
+                bthome_data=bthome_data
+            )
+        
+        # Get motion history using optimized method
+        history = database.get_binary_sensor_history(
+            device_address="AA:BB:CC:DD:EE:FF",
+            sensor_name="motion"
+        )
+        
+        assert len(history) == 3
+        assert all(h['name'] == 'motion' for h in history)
+        assert all('timestamp' in h for h in history)
+    
+    def test_get_event_history(self, database):
+        """Test optimized event history query"""
+        bthome_data = BTHomeData(
+            uuid=0xFCD2,
+            version=2,
+            is_encrypted=False,
+            is_trigger_based=False,
+            events=[
+                EventData(device_type="button", event_type="press"),
+            ]
+        )
+        
+        # Store multiple advertisements
+        for i in range(4):
+            database.store_advertisement(
+                address="AA:BB:CC:DD:EE:FF",
+                name="Device 1",
+                bthome_data=bthome_data
+            )
+        
+        # Get button press history using optimized method
+        history = database.get_event_history(
+            device_address="AA:BB:CC:DD:EE:FF",
+            event_type="press"
+        )
+        
+        assert len(history) == 4
+        assert all(h['event_type'] == 'press' for h in history)
+        assert all('timestamp' in h for h in history)
 
 
 if __name__ == "__main__":

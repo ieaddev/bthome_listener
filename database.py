@@ -134,47 +134,74 @@ class BTHomeDatabase:
             CREATE TABLE IF NOT EXISTS sensor_readings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 advertisement_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,   -- Denormalized for faster sensor history queries
                 position INTEGER NOT NULL,  -- Position in the advertisement data
                 object_id INTEGER NOT NULL,   -- BTHome object ID
                 name TEXT NOT NULL,          -- Sensor name (e.g., "temperature")
                 value REAL,                  -- Numeric value (NULL for non-numeric)
                 value_text TEXT,             -- Text value (for non-numeric sensors)
                 unit TEXT,                   -- Unit of measurement
-                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE
+                timestamp TEXT NOT NULL,     -- Denormalized timestamp for faster history queries
+                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
             );
             
             -- Binary sensor readings table
             CREATE TABLE IF NOT EXISTS binary_sensor_readings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 advertisement_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,   -- Denormalized for faster queries
                 position INTEGER NOT NULL,  -- Position in the advertisement data
                 object_id INTEGER NOT NULL,   -- BTHome object ID
                 name TEXT NOT NULL,          -- Sensor name (e.g., "motion")
                 value INTEGER NOT NULL,      -- Boolean as integer (0 or 1)
-                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE
+                timestamp TEXT NOT NULL,     -- Denormalized timestamp for faster history queries
+                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
             );
             
             -- Events table
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 advertisement_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,   -- Denormalized for faster queries
                 position INTEGER NOT NULL,  -- Position in the advertisement data
                 device_type TEXT NOT NULL,  -- Event device type (e.g., "button")
                 event_type TEXT NOT NULL,   -- Event type (e.g., "press")
                 event_property TEXT,        -- JSON string for event properties
-                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE
+                timestamp TEXT NOT NULL,     -- Denormalized timestamp for faster history queries
+                FOREIGN KEY (advertisement_id) REFERENCES advertisements(id) ON DELETE CASCADE,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
             );
             
             -- Indexes for efficient querying
+            -- Primary query: get sensor history for a specific device and sensor name
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_device_name_timestamp ON sensor_readings(device_id, name, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_name_device_timestamp ON sensor_readings(name, device_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_name_timestamp ON sensor_readings(name, timestamp);
+            
+            -- For filtering by device and sensor name (most common use case)
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_device_name ON sensor_readings(device_id, name);
+            
+            -- Original indexes for other query patterns
             CREATE INDEX IF NOT EXISTS idx_advertisements_device_id ON advertisements(device_id);
             CREATE INDEX IF NOT EXISTS idx_advertisements_timestamp ON advertisements(timestamp);
             CREATE INDEX IF NOT EXISTS idx_sensor_readings_advertisement_id ON sensor_readings(advertisement_id);
             CREATE INDEX IF NOT EXISTS idx_sensor_readings_name ON sensor_readings(name);
-            CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp ON sensor_readings(advertisement_id, position);
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp_adv ON sensor_readings(advertisement_id, position);
+            
+            -- Binary sensor indexes
+            CREATE INDEX IF NOT EXISTS idx_binary_sensor_readings_device_name_timestamp ON binary_sensor_readings(device_id, name, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_binary_sensor_readings_device_name ON binary_sensor_readings(device_id, name);
             CREATE INDEX IF NOT EXISTS idx_binary_sensor_readings_advertisement_id ON binary_sensor_readings(advertisement_id);
             CREATE INDEX IF NOT EXISTS idx_binary_sensor_readings_name ON binary_sensor_readings(name);
+            
+            -- Event indexes
+            CREATE INDEX IF NOT EXISTS idx_events_device_type_timestamp ON events(device_id, device_type, timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_advertisement_id ON events(advertisement_id);
             CREATE INDEX IF NOT EXISTS idx_events_device_type ON events(device_type);
+            
+            -- Device index
             CREATE INDEX IF NOT EXISTS idx_devices_address ON devices(address);
         """)
         
@@ -275,22 +302,23 @@ class BTHomeDatabase:
         
         # Store sensor readings with their positions
         for position, sensor in enumerate(bthome_data.sensors):
-            self._store_sensor_reading(cursor, advertisement_id, position, sensor)
+            self._store_sensor_reading(cursor, advertisement_id, device_id, position, sensor, timestamp_iso)
         
         # Store binary sensor readings with their positions
         for position, binary_sensor in enumerate(bthome_data.binary_sensors):
-            self._store_binary_sensor_reading(cursor, advertisement_id, position, binary_sensor)
+            self._store_binary_sensor_reading(cursor, advertisement_id, device_id, position, binary_sensor, timestamp_iso)
         
         # Store events with their positions
         for position, event in enumerate(bthome_data.events):
-            self._store_event(cursor, advertisement_id, position, event)
+            self._store_event(cursor, advertisement_id, device_id, position, event, timestamp_iso)
         
         conn.commit()
         logger.debug(f"Stored advertisement {advertisement_id} from device {address}")
         return advertisement_id
     
     def _store_sensor_reading(self, cursor: sqlite3.Cursor, advertisement_id: int, 
-                              position: int, sensor: SensorData):
+                              device_id: int, position: int, sensor: SensorData, 
+                              timestamp: str):
         """Store a single sensor reading"""
         # Determine if value is numeric or text
         if isinstance(sensor.value, (int, float)):
@@ -302,37 +330,42 @@ class BTHomeDatabase:
         
         cursor.execute(
             """INSERT INTO sensor_readings 
-               (advertisement_id, position, object_id, name, value, value_text, unit)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (advertisement_id, device_id, position, object_id, name, value, value_text, unit, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 advertisement_id,
+                device_id,
                 position,
                 sensor.object_id,
                 sensor.name,
                 value,
                 value_text,
-                sensor.unit
+                sensor.unit,
+                timestamp
             )
         )
     
     def _store_binary_sensor_reading(self, cursor: sqlite3.Cursor, advertisement_id: int,
-                                      position: int, binary_sensor: BinarySensorData):
+                                      device_id: int, position: int, binary_sensor: BinarySensorData,
+                                      timestamp: str):
         """Store a single binary sensor reading"""
         cursor.execute(
             """INSERT INTO binary_sensor_readings 
-               (advertisement_id, position, object_id, name, value)
-               VALUES (?, ?, ?, ?, ?)""",
+               (advertisement_id, device_id, position, object_id, name, value, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 advertisement_id,
+                device_id,
                 position,
                 binary_sensor.object_id,
                 binary_sensor.name,
-                1 if binary_sensor.value else 0
+                1 if binary_sensor.value else 0,
+                timestamp
             )
         )
     
     def _store_event(self, cursor: sqlite3.Cursor, advertisement_id: int,
-                    position: int, event: EventData):
+                    device_id: int, position: int, event: EventData, timestamp: str):
         """Store a single event"""
         # Convert event property to JSON string
         import json
@@ -340,14 +373,16 @@ class BTHomeDatabase:
         
         cursor.execute(
             """INSERT INTO events 
-               (advertisement_id, position, device_type, event_type, event_property)
-               VALUES (?, ?, ?, ?, ?)""",
+               (advertisement_id, device_id, position, device_type, event_type, event_property, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 advertisement_id,
+                device_id,
                 position,
                 event.device_type,
                 event.event_type,
-                event_property_json
+                event_property_json,
+                timestamp
             )
         )
     
@@ -446,6 +481,9 @@ class BTHomeDatabase:
         """
         Get sensor readings, optionally filtered.
         
+        For the most efficient query when filtering by device and sensor name,
+        use get_sensor_history() which uses the denormalized columns directly.
+        
         Args:
             device_address: Optional MAC address to filter by
             sensor_name: Optional sensor name to filter by
@@ -461,10 +499,9 @@ class BTHomeDatabase:
         query = """
             SELECT sr.id, sr.advertisement_id, sr.position, sr.object_id, 
                    sr.name, sr.value, sr.value_text, sr.unit,
-                   a.timestamp, d.address, d.name as device_name
+                   sr.timestamp, d.address, d.name as device_name
             FROM sensor_readings sr
-            JOIN advertisements a ON sr.advertisement_id = a.id
-            JOIN devices d ON a.device_id = d.id
+            JOIN devices d ON sr.device_id = d.id
         """
         params = []
         conditions = []
@@ -480,7 +517,60 @@ class BTHomeDatabase:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
-        query += " ORDER BY a.timestamp DESC, sr.position"
+        query += " ORDER BY sr.timestamp DESC, sr.position"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_sensor_history(self, device_address: Optional[str] = None,
+                           sensor_name: Optional[str] = None,
+                           limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get sensor history - OPTIMIZED for the common use case of filtering 
+        by a single sensor and viewing its history.
+        
+        This method uses the denormalized device_id and timestamp columns
+        for maximum efficiency, avoiding JOIN operations.
+        
+        Args:
+            device_address: Optional MAC address to filter by
+            sensor_name: Optional sensor name to filter by
+            limit: Maximum number of readings to return
+            
+        Returns:
+            List of sensor reading dictionaries with timestamp
+        """
+        self._ensure_initialized()
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Use denormalized columns for direct, efficient access
+        query = """
+            SELECT sr.id, sr.advertisement_id, sr.device_id, sr.position, sr.object_id,
+                   sr.name, sr.value, sr.value_text, sr.unit, sr.timestamp,
+                   d.address, d.name as device_name
+            FROM sensor_readings sr
+            JOIN devices d ON sr.device_id = d.id
+        """
+        params = []
+        conditions = []
+        
+        if device_address:
+            conditions.append("d.address = ?")
+            params.append(device_address)
+        
+        if sensor_name:
+            conditions.append("sr.name = ?")
+            params.append(sensor_name)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY sr.timestamp DESC, sr.position"
         
         if limit:
             query += " LIMIT ?"
@@ -508,12 +598,11 @@ class BTHomeDatabase:
         cursor = conn.cursor()
         
         query = """
-            SELECT bsr.id, bsr.advertisement_id, bsr.position, bsr.object_id, 
-                   bsr.name, bsr.value,
-                   a.timestamp, d.address, d.name as device_name
+            SELECT bsr.id, bsr.advertisement_id, bsr.device_id, bsr.position, bsr.object_id, 
+                   bsr.name, bsr.value, bsr.timestamp,
+                   d.address, d.name as device_name
             FROM binary_sensor_readings bsr
-            JOIN advertisements a ON bsr.advertisement_id = a.id
-            JOIN devices d ON a.device_id = d.id
+            JOIN devices d ON bsr.device_id = d.id
         """
         params = []
         conditions = []
@@ -529,7 +618,55 @@ class BTHomeDatabase:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
-        query += " ORDER BY a.timestamp DESC, bsr.position"
+        query += " ORDER BY bsr.timestamp DESC, bsr.position"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_binary_sensor_history(self, device_address: Optional[str] = None,
+                                   sensor_name: Optional[str] = None,
+                                   limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get binary sensor history - OPTIMIZED for filtering by device and sensor name.
+        
+        Args:
+            device_address: Optional MAC address to filter by
+            sensor_name: Optional sensor name to filter by
+            limit: Maximum number of readings to return
+            
+        Returns:
+            List of binary sensor reading dictionaries with timestamp
+        """
+        self._ensure_initialized()
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT bsr.id, bsr.advertisement_id, bsr.device_id, bsr.position, bsr.object_id,
+                   bsr.name, bsr.value, bsr.timestamp,
+                   d.address, d.name as device_name
+            FROM binary_sensor_readings bsr
+            JOIN devices d ON bsr.device_id = d.id
+        """
+        params = []
+        conditions = []
+        
+        if device_address:
+            conditions.append("d.address = ?")
+            params.append(device_address)
+        
+        if sensor_name:
+            conditions.append("bsr.name = ?")
+            params.append(sensor_name)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY bsr.timestamp DESC, bsr.position"
         
         if limit:
             query += " LIMIT ?"
@@ -557,12 +694,11 @@ class BTHomeDatabase:
         cursor = conn.cursor()
         
         query = """
-            SELECT e.id, e.advertisement_id, e.position, e.device_type, 
-                   e.event_type, e.event_property,
-                   a.timestamp, d.address, d.name as device_name
+            SELECT e.id, e.advertisement_id, e.device_id, e.position, e.device_type, 
+                   e.event_type, e.event_property, e.timestamp,
+                   d.address, d.name as device_name
             FROM events e
-            JOIN advertisements a ON e.advertisement_id = a.id
-            JOIN devices d ON a.device_id = d.id
+            JOIN devices d ON e.device_id = d.id
         """
         params = []
         conditions = []
@@ -578,7 +714,55 @@ class BTHomeDatabase:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
-        query += " ORDER BY a.timestamp DESC, e.position"
+        query += " ORDER BY e.timestamp DESC, e.position"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_event_history(self, device_address: Optional[str] = None,
+                          event_type: Optional[str] = None,
+                          limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get event history - OPTIMIZED for filtering by device and event type.
+        
+        Args:
+            device_address: Optional MAC address to filter by
+            event_type: Optional event type to filter by
+            limit: Maximum number of events to return
+            
+        Returns:
+            List of event dictionaries with timestamp
+        """
+        self._ensure_initialized()
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT e.id, e.advertisement_id, e.device_id, e.position, e.device_type,
+                   e.event_type, e.event_property, e.timestamp,
+                   d.address, d.name as device_name
+            FROM events e
+            JOIN devices d ON e.device_id = d.id
+        """
+        params = []
+        conditions = []
+        
+        if device_address:
+            conditions.append("d.address = ?")
+            params.append(device_address)
+        
+        if event_type:
+            conditions.append("e.event_type = ?")
+            params.append(event_type)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY e.timestamp DESC, e.position"
         
         if limit:
             query += " LIMIT ?"
