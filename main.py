@@ -219,13 +219,6 @@ class BTHomeListener:
         return self.scanner.get_statistics()
 
 
-async def handle_shutdown(listener: BTHomeListener, signame: str):
-    """Handle shutdown signals"""
-    logger.info(f"Received {signame}, shutting down...")
-    await listener.stop()
-    sys.exit(0)
-
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
@@ -292,26 +285,32 @@ def main():
     # Handle shutdown signals
     loop = asyncio.get_event_loop()
     
+    async def shutdown_handler(signame):
+        """Handle shutdown signals gracefully"""
+        logger.info(f"Received {signame}, shutting down...")
+        await listener.stop()
+    
     for signame in ('SIGINT', 'SIGTERM'):
         loop.add_signal_handler(
             getattr(signal, signame),
-            lambda s=signame: asyncio.create_task(handle_shutdown(listener, s))
+            lambda s=signame: asyncio.create_task(shutdown_handler(s))
         )
     
     try:
         # Run the listener
         loop.run_until_complete(listener.start())
     except KeyboardInterrupt:
+        # This is handled by the signal handler above, but just in case
         logger.info("Keyboard interrupt, shutting down...")
         loop.run_until_complete(listener.stop())
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
     finally:
+        # Ensure clean shutdown
         loop.close()
-
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
