@@ -179,153 +179,139 @@ HTML_TEMPLATE = """
                         {% endfor %}
                     </select>
                 </div>
-                <button type="submit">Load Advertisements</button>
+                <button type="submit">Load Positions</button>
             </form>
         </div>
         
-        <div class="card" id="advertisementsCard" style="display: none;">
-            <h2>Select Advertisement</h2>
-            <div id="advertisementsList" class="advertisement-list"></div>
+        <div class="card" id="timeFilterCard" style="display: none;">
+            <h2>Time Range Filter (Optional)</h2>
+            <div class="sensor-grid">
+                <div class="sensor-card">
+                    <label for="startTime">Start Time:</label>
+                    <input type="datetime-local" id="startTime">
+                </div>
+                <div class="sensor-card">
+                    <label for="endTime">End Time:</label>
+                    <input type="datetime-local" id="endTime">
+                </div>
+            </div>
         </div>
         
-        <div class="card" id="dataCard" style="display: none;">
-            <h2>Advertisement Data</h2>
-            <div id="advertisementInfo"></div>
-            <div id="sensorData"></div>
+        <div class="card" id="positionsCard" style="display: none;">
+            <h2>Available Sensor Positions</h2>
+            <div id="positionsList"></div>
+        </div>
+        
+        <div class="card" id="sensorDataCard" style="display: none;">
+            <h2>Sensor Data</h2>
+            <div id="sensorDataInfo"></div>
         </div>
     </div>
     
     <script>
         const deviceForm = document.getElementById('deviceForm');
-        const advertisementsCard = document.getElementById('advertisementsCard');
-        const dataCard = document.getElementById('dataCard');
-        const advertisementsList = document.getElementById('advertisementsList');
-        const advertisementInfo = document.getElementById('advertisementInfo');
-        const sensorData = document.getElementById('sensorData');
+        const positionsCard = document.getElementById('positionsCard');
+        const sensorDataCard = document.getElementById('sensorDataCard');
+        const timeFilterCard = document.getElementById('timeFilterCard');
+        const positionsList = document.getElementById('positionsList');
+        const sensorDataInfo = document.getElementById('sensorDataInfo');
         
         let currentDevice = null;
-        let currentAdvertisement = null;
+        let currentDeviceId = null;
+        let currentPosition = null;
         
-        // Load advertisements for selected device
+        // Load positions for selected device
         deviceForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             currentDevice = document.getElementById('deviceSelect').value;
             
             if (!currentDevice) return;
             
-            const response = await fetch(`/api/device/${encodeURIComponent(currentDevice)}/advertisements`);
-            const ads = await response.json();
+            // Get device ID
+            const deviceResponse = await fetch(`/api/devices`);
+            const devices = await deviceResponse.json();
+            const device = devices.find(d => d.address === currentDevice);
+            currentDeviceId = device ? device.id : null;
             
-            if (ads.length === 0) {
-                advertisementsList.innerHTML = '<div class="empty-state">No advertisements found for this device</div>';
-                advertisementsCard.style.display = 'block';
-                dataCard.style.display = 'none';
+            if (!currentDeviceId) {
+                positionsList.innerHTML = '<div class="empty-state">Device not found</div>';
+                positionsCard.style.display = 'block';
                 return;
             }
             
-            advertisementsList.innerHTML = ads.map(ad => `
-                <div class="advertisement-item" data-id="${ad.id}" data-timestamp="${ad.timestamp}">
-                    <strong>Ad #${ad.id}</strong> - ${new Date(ad.timestamp).toLocaleString()}
-                    ${ad.bthome_version ? `<br>BTHome v${ad.bthome_version}` : ''}
-                    ${ad.packet_id !== null ? `<br>Packet ID: ${ad.packet_id}` : ''}
+            // Show time filter card
+            timeFilterCard.style.display = 'block';
+            
+            const response = await fetch(`/api/device/${encodeURIComponent(currentDevice)}/positions`);
+            const positions = await response.json();
+            
+            if (positions.length === 0) {
+                positionsList.innerHTML = '<div class="empty-state">No sensor positions found for this device</div>';
+                positionsCard.style.display = 'block';
+                sensorDataCard.style.display = 'none';
+                return;
+            }
+            
+            positionsList.innerHTML = positions.map(pos => `
+                <div class="advertisement-item" data-position="${pos.position}" data-device-id="${pos.device_id}">
+                    <strong>Position ${pos.position}</strong> - ${pos.name}
+                    ${pos.unit ? `<br><span class="unit">Unit: ${pos.unit}</span>` : ''}
+                    <br><span class="timestamp">${pos.sensor_type} sensor</span>
                 </div>
             `).join('');
             
-            advertisementsCard.style.display = 'block';
-            dataCard.style.display = 'none';
+            positionsCard.style.display = 'block';
+            sensorDataCard.style.display = 'none';
             
             // Add click handlers
             document.querySelectorAll('.advertisement-item').forEach(item => {
                 item.addEventListener('click', () => {
                     document.querySelectorAll('.advertisement-item').forEach(i => i.classList.remove('selected'));
                     item.classList.add('selected');
-                    loadAdvertisementData(item.dataset.id);
+                    loadPositionData(currentDeviceId, item.dataset.position);
                 });
             });
         });
         
-        async function loadAdvertisementData(advertisementId) {
-            currentAdvertisement = advertisementId;
+        async function loadPositionData(deviceId, position) {
+            currentPosition = position;
             
-            const response = await fetch(`/api/advertisement/${advertisementId}`);
+            // Get start and end time from form (optional)
+            const startTime = document.getElementById('startTime')?.value || null;
+            const endTime = document.getElementById('endTime')?.value || null;
+            
+            let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
+            if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
+            if (endTime) url += `end_time=${encodeURIComponent(endTime)}&`;
+            
+            const response = await fetch(url);
             const data = await response.json();
             
-            // Display advertisement info
-            advertisementInfo.innerHTML = `
-                <div class="sensor-grid">
-                    <div class="sensor-card">
-                        <div class="name">Advertisement ID</div>
-                        <div class="value">${data.advertisement.id}</div>
-                    </div>
-                    <div class="sensor-card">
-                        <div class="name">Timestamp</div>
-                        <div class="value">${new Date(data.advertisement.timestamp).toLocaleString()}</div>
-                    </div>
-                    <div class="sensor-card">
-                        <div class="name">BTHome Version</div>
-                        <div class="value">${data.advertisement.bthome_version || 'N/A'}</div>
-                    </div>
-                    <div class="sensor-card">
-                        <div class="name">Device</div>
-                        <div class="value">${data.advertisement.device_name || data.advertisement.address}</div>
-                    </div>
-                </div>
-            `;
+            if (data.length === 0) {
+                sensorDataInfo.innerHTML = '<div class="empty-state">No data found for this position with the specified filters</div>';
+                sensorDataCard.style.display = 'block';
+                return;
+            }
             
             // Display sensor data
-            let sensorHtml = '<h3>Sensor Readings</h3>';
-            if (data.sensors.length > 0) {
-                sensorHtml += '<div class="sensor-grid">';
-                data.sensors.forEach(sensor => {
-                    const value = sensor.value !== null ? sensor.value : sensor.value_text;
-                    sensorHtml += `
-                        <div class="sensor-card">
-                            <div class="name">${sensor.name} (Pos: ${sensor.position})</div>
-                            <div class="value">${value}</div>
-                            ${sensor.unit ? `<div class="unit">${sensor.unit}</div>` : ''}
-                        </div>
-                    `;
-                });
-                sensorHtml += '</div>';
-            } else {
-                sensorHtml += '<div class="empty-state">No sensor readings in this advertisement</div>';
-            }
+            let sensorHtml = `<h3>Sensor Data for Position ${position}</h3>`;
+            sensorHtml += '<div class="sensor-grid">';
             
-            sensorHtml += '<h3>Binary Sensor Readings</h3>';
-            if (data.binary_sensors.length > 0) {
-                sensorHtml += '<div class="sensor-grid">';
-                data.binary_sensors.forEach(sensor => {
-                    const value = sensor.value === 1 ? 'ON' : 'OFF';
-                    sensorHtml += `
-                        <div class="sensor-card">
-                            <div class="name">${sensor.name} (Pos: ${sensor.position})</div>
-                            <div class="value">${value}</div>
-                        </div>
-                    `;
-                });
-                sensorHtml += '</div>';
-            } else {
-                sensorHtml += '<div class="empty-state">No binary sensor readings in this advertisement</div>';
-            }
+            data.forEach(reading => {
+                const value = reading.value !== null ? reading.value : reading.value_text;
+                sensorHtml += `
+                    <div class="sensor-card">
+                        <div class="name">Reading at ${new Date(reading.timestamp).toLocaleString()}</div>
+                        <div class="value">${value}</div>
+                        ${reading.unit ? `<div class="unit">${reading.unit}</div>` : ''}
+                        <div class="timestamp">Advertisement #${reading.advertisement_id}</div>
+                    </div>
+                `;
+            });
             
-            sensorHtml += '<h3>Events</h3>';
-            if (data.events.length > 0) {
-                sensorHtml += '<div class="sensor-grid">';
-                data.events.forEach(event => {
-                    sensorHtml += `
-                        <div class="sensor-card">
-                            <div class="name">${event.device_type}: ${event.event_type} (Pos: ${event.position})</div>
-                            ${event.event_property ? `<div class="value">${event.event_property}</div>` : ''}
-                        </div>
-                    `;
-                });
-                sensorHtml += '</div>';
-            } else {
-                sensorHtml += '<div class="empty-state">No events in this advertisement</div>';
-            }
-            
-            sensorData.innerHTML = sensorHtml;
-            dataCard.style.display = 'block';
+            sensorHtml += '</div>';
+            sensorDataInfo.innerHTML = sensorHtml;
+            sensorDataCard.style.display = 'block';
         }
     </script>
 </body>
@@ -347,34 +333,90 @@ def api_devices():
     return jsonify(devices)
 
 
-@app.route('/api/device/<device_address>/advertisements')
-def api_device_advertisements(device_address):
-    """API endpoint: get advertisements for a specific device"""
-    advertisements = db.get_advertisements(device_address=device_address)
-    return jsonify(advertisements)
-
-
-@app.route('/api/advertisement/<int:advertisement_id>')
-def api_advertisement(advertisement_id):
-    """API endpoint: get all data for a specific advertisement"""
-    data = db.get_advertisement_data(advertisement_id)
-    if data is None:
-        return jsonify({"error": "Advertisement not found"}), 404
-    return jsonify(data)
-
-
-@app.route('/api/sensor/<sensor_name>/history')
-def api_sensor_history(sensor_name):
-    """API endpoint: get history for a specific sensor"""
-    device_address = request.args.get('device')
-    limit = request.args.get('limit', type=int)
+@app.route('/api/device/<device_address>/positions')
+def api_device_positions(device_address):
+    """API endpoint: get available sensor positions for a device
     
-    history = db.get_sensor_history(
-        device_address=device_address,
-        sensor_name=sensor_name,
-        limit=limit
-    )
-    return jsonify(history)
+    Returns a list of unique positions with their metadata (name, unit, sensor type)
+    """
+    # Get device ID
+    device = db.get_device(device_address)
+    if device is None:
+        return jsonify({"error": "Device not found"}), 404
+    
+    device_id = device['id']
+    
+    # Get all sensor readings for this device
+    readings = db.get_sensor_readings(device_address=device_address)
+    
+    # Get all binary sensor readings for this device
+    binary_readings = db.get_binary_sensor_readings(device_address=device_address)
+    
+    # Build a map of position -> info
+    positions = {}
+    
+    for reading in readings:
+        pos = reading['position']
+        if pos not in positions:
+            positions[pos] = {
+                'position': pos,
+                'name': reading['name'],
+                'unit': reading['unit'],
+                'sensor_type': 'sensor',
+                'device_id': device_id,
+                'device_address': device_address
+            }
+    
+    for reading in binary_readings:
+        pos = reading['position']
+        if pos not in positions:
+            positions[pos] = {
+                'position': pos,
+                'name': reading['name'],
+                'unit': '',
+                'sensor_type': 'binary_sensor',
+                'device_id': device_id,
+                'device_address': device_address
+            }
+    
+    # Convert to list and sort by position
+    result = sorted(positions.values(), key=lambda x: x['position'])
+    
+    return jsonify(result)
+
+
+@app.route('/api/sensor/<int:device_id>/<int:position>')
+def api_sensor_data(device_id, position):
+    """API endpoint: get sensor data for a specific device and position
+    
+    Required parameters:
+    - device_id: The device ID
+    - position: The position in the advertisement
+    
+    Optional query parameters:
+    - start_time: Filter by start timestamp (ISO 8601 format)
+    - end_time: Filter by end timestamp (ISO 8601 format)
+    """
+    start_time = request.args.get('start_time')
+    end_time = request.args.get('end_time')
+    
+    # Get all sensor readings for this device and position
+    all_readings = db.get_sensor_readings(device_address=None)
+    
+    # Filter by device_id and position
+    filtered = [r for r in all_readings if r['device_id'] == device_id and r['position'] == position]
+    
+    # Apply time filters if provided
+    if start_time:
+        filtered = [r for r in filtered if r['timestamp'] >= start_time]
+    
+    if end_time:
+        filtered = [r for r in filtered if r['timestamp'] <= end_time]
+    
+    # Sort by timestamp
+    filtered.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    return jsonify(filtered)
 
 
 @app.route('/api/statistics')

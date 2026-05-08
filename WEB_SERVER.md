@@ -39,9 +39,10 @@ Then open your browser to: `http://localhost:5000`
 ## Usage
 
 1. **Select a Device**: Choose from the dropdown list of detected BTHome devices
-2. **View Advertisements**: See all advertisements received from that device, sorted by timestamp
-3. **Select an Advertisement**: Click on any advertisement to view its details
-4. **View Data**: See all sensor readings, binary sensor states, and events with their positions in the advertisement
+2. **View Available Positions**: See all sensor positions for that device with their names and units
+3. **Select a Position**: Click on any position to view its time series data
+4. **View Data**: See all readings for that position, with optional time range filtering
+5. **Apply Time Filters**: Optionally filter the data by start and end timestamps
 
 ## API Endpoints
 
@@ -64,66 +65,41 @@ Returns a list of all devices.
 ]
 ```
 
-### GET /api/device/<device_address>/advertisements
-Returns all advertisements for a specific device.
+### GET /api/device/<device_address>/positions
+Returns all available sensor positions for a specific device with their metadata.
 
 **Response:**
 ```json
 [
   {
-    "id": 123,
+    "position": 0,
+    "name": "temperature",
+    "unit": "°C",
+    "sensor_type": "sensor",
     "device_id": 1,
-    "timestamp": "2024-01-01T12:00:00",
-    "bthome_version": 2,
-    "is_encrypted": 0,
-    "is_trigger_based": 0,
-    "packet_id": 42,
-    "device_type_id": 123,
-    "firmware_version": "1.0.0",
-    "address": "AA:BB:CC:DD:EE:FF",
-    "device_name": "Device Name"
+    "device_address": "AA:BB:CC:DD:EE:FF"
+  },
+  {
+    "position": 1,
+    "name": "humidity",
+    "unit": "%",
+    "sensor_type": "sensor",
+    "device_id": 1,
+    "device_address": "AA:BB:CC:DD:EE:FF"
   }
 ]
 ```
 
-### GET /api/advertisement/<advertisement_id>
-Returns all data for a specific advertisement.
+### GET /api/sensor/<device_id>/<position>
+Returns sensor data for a specific device and position.
 
-**Response:**
-```json
-{
-  "advertisement": {
-    "id": 123,
-    "device_id": 1,
-    "timestamp": "2024-01-01T12:00:00",
-    "bthome_version": 2,
-    "device_name": "Device Name",
-    "address": "AA:BB:CC:DD:EE:FF"
-  },
-  "sensors": [
-    {
-      "id": 1,
-      "advertisement_id": 123,
-      "position": 0,
-      "object_id": 2,
-      "name": "temperature",
-      "value": 22.5,
-      "value_text": null,
-      "unit": "°C",
-      "timestamp": "2024-01-01T12:00:00"
-    }
-  ],
-  "binary_sensors": [],
-  "events": []
-}
-```
-
-### GET /api/sensor/<sensor_name>/history
-Returns history for a specific sensor.
+**Path Parameters:**
+- `device_id`: The device ID (integer)
+- `position`: The position in the advertisement (integer)
 
 **Query Parameters:**
-- `device` (optional): Filter by device address
-- `limit` (optional): Maximum number of readings to return
+- `start_time` (optional): Filter by start timestamp (ISO 8601 format, e.g., `2024-01-01T12:00:00`)
+- `end_time` (optional): Filter by end timestamp (ISO 8601 format)
 
 **Response:**
 ```json
@@ -139,6 +115,20 @@ Returns history for a specific sensor.
     "value_text": null,
     "unit": "°C",
     "timestamp": "2024-01-01T12:00:00",
+    "address": "AA:BB:CC:DD:EE:FF",
+    "device_name": "Device Name"
+  },
+  {
+    "id": 2,
+    "advertisement_id": 124,
+    "device_id": 1,
+    "position": 0,
+    "object_id": 2,
+    "name": "temperature",
+    "value": 23.0,
+    "value_text": null,
+    "unit": "°C",
+    "timestamp": "2024-01-01T12:05:00",
     "address": "AA:BB:CC:DD:EE:FF",
     "device_name": "Device Name"
   }
