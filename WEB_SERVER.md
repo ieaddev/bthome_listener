@@ -34,6 +34,15 @@ python web_server.py --database /path/to/bthome_data.db
 python web_server.py --host 0.0.0.0 --port 8080
 ```
 
+# Run in development mode (for debugging)
+python web_server.py --env development
+
+# Run in production mode (default, recommended)
+python web_server.py --env production
+
+# Run with threading for better performance
+python web_server.py --env production --threaded
+
 Then open your browser to: `http://localhost:5000`
 
 ## Usage
@@ -251,7 +260,30 @@ The web server can be configured via command-line arguments:
 | `--database` | `bthome_data.db` | Path to SQLite database file |
 | `--host` | `0.0.0.0` | Host to bind to |
 | `--port` | `5000` | Port to listen on |
-| `--debug` | `False` | Enable debug mode |
+| `--env` | `production` | Environment mode: `development`, `dev`, `production`, `prod` |
+| `--debug` | `False` | Enable debug mode (deprecated: use `--env development` instead) |
+| `--threaded` | `False` | Enable threaded mode for production |
+
+### Environment Modes
+
+The `--env` argument controls whether the server runs in development or production mode:
+
+- **Development mode** (`--env development` or `--env dev`):
+  - Debug mode is enabled
+  - Detailed error pages are shown
+  - Auto-reloader is active (if supported)
+  - Console shows development warnings
+  - **Do not use in production!**
+
+- **Production mode** (`--env production` or `--env prod`):
+  - Debug mode is disabled
+  - Optimized for performance
+  - Error pages are generic (no sensitive info)
+  - Recommended for all deployment scenarios
+
+**Note**: The default is `production` mode for security. Use `--env development` only during development.
+
+The legacy `--debug` flag is deprecated but still works for backward compatibility. It will show a warning message when used.
 
 ## Database Access
 

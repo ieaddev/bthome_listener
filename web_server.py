@@ -9,12 +9,15 @@ stored in the SQLite database. Users can:
 - View the time series data for that advertisement
 
 Usage:
-    python web_server.py [--database PATH] [--host HOST] [--port PORT]
+    python web_server.py [--database PATH] [--host HOST] [--port PORT] [--env ENVIRONMENT] [--debug] [--threaded]
 
 Options:
     --database PATH    Path to SQLite database (default: bthome_data.db)
     --host HOST        Host to bind to (default: 0.0.0.0)
     --port PORT        Port to listen on (default: 5000)
+    --env ENVIRONMENT  Environment mode: development, dev, production, prod (default: production)
+    --debug            Enable debug mode (deprecated: use --env development instead)
+    --threaded         Enable threaded mode for production
 """
 
 import argparse
@@ -591,10 +594,34 @@ def main():
     parser.add_argument(
         '--debug',
         action='store_true',
-        help='Enable debug mode'
+        help='Enable debug mode (deprecated: use --env development instead)'
+    )
+    parser.add_argument(
+        '--env',
+        type=str,
+        default='production',
+        choices=['development', 'dev', 'production', 'prod'],
+        help='Environment mode: development, dev, production, prod (default: production)'
+    )
+    parser.add_argument(
+        '--threaded',
+        action='store_true',
+        help='Enable threaded mode for production'
     )
     
     args = parser.parse_args()
+    
+    # Determine debug mode based on environment and deprecated --debug flag
+    debug_mode = args.debug or args.env in ['development', 'dev']
+    
+    if args.debug:
+        logger.warning("--debug flag is deprecated, use --env development instead")
+    
+    # Log mode
+    if debug_mode:
+        logger.warning("Running in DEVELOPMENT mode - do not use in production!")
+    else:
+        logger.info("Running in PRODUCTION mode")
     
     # Initialize database
     db = BTHomeDatabase(db_path=args.database)
@@ -603,7 +630,7 @@ def main():
     logger.info(f"Starting BTHome Web Server on {args.host}:{args.port}")
     logger.info(f"Using database: {args.database}")
     
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(host=args.host, port=args.port, debug=debug_mode, threaded=args.threaded)
 
 
 if __name__ == '__main__':
