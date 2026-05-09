@@ -39,6 +39,13 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BTHome Sensor Data Viewer</title>
+    <script src="/static/js/luxon.min.js"></script>
+    <script src="/static/js/chart.umd.min.js"></script>
+    <script src="/static/js/chartjs-adapter-luxon.min.js"></script>
+    <script>
+        // Register luxon adapter for time axis
+        Chart.register(ChartjsAdapterLuxon);
+    </script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
@@ -161,6 +168,11 @@ HTML_TEMPLATE = """
         .advertisement-item.selected {
             background-color: #e8f5e9;
         }
+        .chart-container {
+            position: relative;
+            height: 500px;
+            margin: 20px 0;
+        }
     </style>
 </head>
 <body>
@@ -185,14 +197,25 @@ HTML_TEMPLATE = """
         
         <div class="card" id="timeFilterCard" style="display: none;">
             <h2>Time Range Filter (Optional)</h2>
-            <div class="sensor-grid">
-                <div class="sensor-card">
-                    <label for="startTime">Start Time:</label>
-                    <input type="datetime-local" id="startTime">
-                </div>
-                <div class="sensor-card">
-                    <label for="endTime">End Time:</label>
-                    <input type="datetime-local" id="endTime">
+            <div class="form-group">
+                <label for="timeRange">Time Range:</label>
+                <select id="timeRange" name="timeRange">
+                    <option value="lastDay" selected>Last Day</option>
+                    <option value="lastWeek">Last Week</option>
+                    <option value="lastMonth">Last Month</option>
+                    <option value="custom">Custom Range</option>
+                </select>
+            </div>
+            <div id="customRangeContainer" style="display: none; margin-top: 15px;">
+                <div class="sensor-grid">
+                    <div class="sensor-card">
+                        <label for="startTime">From:</label>
+                        <input type="datetime-local" id="startTime">
+                    </div>
+                    <div class="sensor-card">
+                        <label for="endTime">Until:</label>
+                        <input type="datetime-local" id="endTime">
+                    </div>
                 </div>
             </div>
         </div>
@@ -204,6 +227,9 @@ HTML_TEMPLATE = """
         
         <div class="card" id="sensorDataCard" style="display: none;">
             <h2>Sensor Data</h2>
+            <div class="chart-container">
+                <canvas id="sensorChart"></canvas>
+            </div>
             <div id="sensorDataInfo"></div>
         </div>
     </div>
@@ -219,6 +245,11 @@ HTML_TEMPLATE = """
         let currentDevice = null;
         let currentDeviceId = null;
         let currentPosition = null;
+        let sensorChart = null;
+        
+        // Time range filter elements
+        const timeRangeSelect = document.getElementById('timeRange');
+        const customRangeContainer = document.getElementById('customRangeContainer');
         
         // Load positions for selected device
         deviceForm.addEventListener('submit', async (e) => {
@@ -242,7 +273,21 @@ HTML_TEMPLATE = """
             // Show time filter card
             timeFilterCard.style.display = 'block';
             
-            const response = await fetch(`/api/device/${encodeURIComponent(currentDevice)}/positions`);
+            // Setup time range filter
+            if (timeRangeSelect) {
+                timeRangeSelect.addEventListener('change', function() {
+                    if (this.value === 'custom') {
+                        customRangeContainer.style.display = 'block';
+                    } else {
+                        customRangeContainer.style.display = 'none';
+                        // Clear custom values when switching away from custom
+                        document.getElementById('startTime').value = '';
+                        document.getElementById('endTime').value = '';
+                    }
+                });
+            }
+            
+            const response = await fetch(`/api/device/${encodeURIComponent(currentDeviceId)}/positions`);
             const positions = await response.json();
             
             if (positions.length === 0) {
@@ -253,7 +298,7 @@ HTML_TEMPLATE = """
             }
             
             positionsList.innerHTML = positions.map(pos => `
-                <div class="advertisement-item" data-position="${pos.position}" data-device-id="${pos.device_id}">
+                <div class="advertisement-item" data-position="${pos.position}" data-device-id="${pos.device_id}" data-name="${pos.name || ''}" data-unit="${pos.unit || ''}">
                     <strong>Position ${pos.position}</strong> - ${pos.name}
                     ${pos.unit ? `<br><span class="unit">Unit: ${pos.unit}</span>` : ''}
                     <br><span class="timestamp">${pos.sensor_type} sensor</span>
@@ -273,12 +318,39 @@ HTML_TEMPLATE = """
             });
         });
         
+        function getTimeRange() {
+            const range = timeRangeSelect?.value || 'lastDay';
+            const now = new Date();
+            let startTime = null;
+            let endTime = null;
+            
+            if (range === 'custom') {
+                startTime = document.getElementById('startTime')?.value || new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+                endTime = document.getElementById('endTime')?.value || now.toISOString().slice(0, 19);
+            } else if (range === 'lastDay') {
+                startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+                endTime = now.toISOString().slice(0, 19);
+            } else if (range === 'lastWeek') {
+                startTime = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+                endTime = now.toISOString().slice(0, 19);
+            } else if (range === 'lastMonth') {
+                startTime = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+                endTime = now.toISOString().slice(0, 19);
+            }
+            
+            return { startTime, endTime };
+        }
+        
         async function loadPositionData(deviceId, position) {
             currentPosition = position;
             
-            // Get start and end time from form (optional)
-            const startTime = document.getElementById('startTime')?.value || null;
-            const endTime = document.getElementById('endTime')?.value || null;
+            // Get sensor name and unit from the selected position item
+            const selectedItem = document.querySelector('.advertisement-item.selected');
+            const sensorName = selectedItem?.dataset.name || `Position ${position}`;
+            const unit = selectedItem?.dataset.unit || '';
+            
+            // Get time range based on selection
+            const { startTime, endTime } = getTimeRange();
             
             let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
             if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
@@ -293,24 +365,77 @@ HTML_TEMPLATE = """
                 return;
             }
             
-            // Display sensor data
-            let sensorHtml = `<h3>Sensor Data for Position ${position}</h3>`;
-            sensorHtml += '<div class="sensor-grid">';
+            // Prepare chart data
+            const timestamps = data.map(r => new Date(r.timestamp));
+            const values = data.map(r => r.value !== null ? r.value : (r.value_text ? parseFloat(r.value_text) || 0 : 0));
             
-            data.forEach(reading => {
-                const value = reading.value !== null ? reading.value : reading.value_text;
-                sensorHtml += `
-                    <div class="sensor-card">
-                        <div class="name">Reading at ${new Date(reading.timestamp).toLocaleString()}</div>
-                        <div class="value">${value}</div>
-                        ${reading.unit ? `<div class="unit">${reading.unit}</div>` : ''}
-                        <div class="timestamp">Advertisement #${reading.advertisement_id}</div>
-                    </div>
-                `;
+            // Destroy existing chart if it exists
+            if (sensorChart) {
+                sensorChart.destroy();
+            }
+            
+            const ctx = document.getElementById('sensorChart').getContext('2d');
+            sensorChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: timestamps,
+                    datasets: [{
+                        label: `${sensorName}${unit ? ` (${unit})` : ''}`,
+                        data: values,
+                        borderColor: '#4CAF50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'minute',
+                                displayFormats: {
+                                    minute: 'HH:mm',
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: `${sensorName}${unit ? ` (${unit})` : ''}`
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${sensorName}: ${context.raw} ${unit}`;
+                                },
+                                afterLabel: function(context) {
+                                    const timestamp = timestamps[context.dataIndex];
+                                    return `Time: ${timestamp.toLocaleString()}`;
+                                }
+                            }
+                        }
+                    }
+                }
             });
             
-            sensorHtml += '</div>';
-            sensorDataInfo.innerHTML = sensorHtml;
+            // Show info
+            sensorDataInfo.innerHTML = `<p>Showing ${data.length} readings for ${sensorName}</p>`;
             sensorDataCard.style.display = 'block';
         }
     </script>
@@ -333,18 +458,21 @@ def api_devices():
     return jsonify(devices)
 
 
-@app.route('/api/device/<device_address>/positions')
-def api_device_positions(device_address):
+@app.route('/api/device/<int:device_id>/positions')
+def api_device_positions(device_id):
     """API endpoint: get available sensor positions for a device
     
     Returns a list of unique positions with their metadata (name, unit, sensor type)
+    
+    Args:
+        device_id: The database ID of the device
     """
-    # Get device ID
-    device = db.get_device(device_address)
+    # Verify device exists
+    device = db.get_device_by_id(device_id)
     if device is None:
         return jsonify({"error": "Device not found"}), 404
     
-    device_id = device['id']
+    device_address = device['address']
     
     # Get all sensor readings for this device
     readings = db.get_sensor_readings(device_address=device_address)
@@ -393,12 +521,16 @@ def api_sensor_data(device_id, position):
     - device_id: The device ID
     - position: The position in the advertisement
     
-    Optional query parameters:
+    Required query parameters:
     - start_time: Filter by start timestamp (ISO 8601 format)
     - end_time: Filter by end timestamp (ISO 8601 format)
     """
     start_time = request.args.get('start_time')
     end_time = request.args.get('end_time')
+    
+    # Validate required parameters
+    if not start_time or not end_time:
+        return jsonify({'error': 'Both start_time and end_time query parameters are required'}), 400
     
     # Get all sensor readings for this device and position
     all_readings = db.get_sensor_readings(device_address=None)
@@ -406,17 +538,22 @@ def api_sensor_data(device_id, position):
     # Filter by device_id and position
     filtered = [r for r in all_readings if r['device_id'] == device_id and r['position'] == position]
     
-    # Apply time filters if provided
-    if start_time:
-        filtered = [r for r in filtered if r['timestamp'] >= start_time]
-    
-    if end_time:
-        filtered = [r for r in filtered if r['timestamp'] <= end_time]
+    # Apply mandatory time filters
+    filtered = [r for r in filtered if r['timestamp'] >= start_time and r['timestamp'] <= end_time]
     
     # Sort by timestamp
     filtered.sort(key=lambda x: x['timestamp'], reverse=True)
     
-    return jsonify(filtered)
+    # Simplify response: only include necessary fields
+    simplified = [{
+        'id': r['id'],
+        'advertisement_id': r['advertisement_id'],
+        'timestamp': r['timestamp'],
+        'value': r['value'],
+        'value_text': r['value_text']
+    } for r in filtered]
+    
+    return jsonify(simplified)
 
 
 @app.route('/api/statistics')
