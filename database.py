@@ -15,6 +15,7 @@ Database Schema:
 
 import sqlite3
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -65,26 +66,26 @@ class BTHomeDatabase:
         """
         self.db_path = db_path
         self.config = config or DatabaseConfig(db_path=db_path)
-        self._connection: Optional[sqlite3.Connection] = None
+        self._local = threading.local()
         self._initialized = False
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get or create database connection"""
-        if self._connection is None:
-            self._connection = sqlite3.connect(self.db_path)
-            self._connection.row_factory = sqlite3.Row
+        """Get or create database connection for the current thread"""
+        if not hasattr(self._local, 'connection') or self._local.connection is None:
+            self._local.connection = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._local.connection.row_factory = sqlite3.Row
             # Enable foreign key support
-            self._connection.execute("PRAGMA foreign_keys = ON")
+            self._local.connection.execute("PRAGMA foreign_keys = ON")
             # Configure based on settings
-            self._connection.execute(f"PRAGMA journal_mode = {self.config.journal_mode}")
-            self._connection.execute(f"PRAGMA synchronous = {self.config.synchronous}")
-        return self._connection
+            self._local.connection.execute(f"PRAGMA journal_mode = {self.config.journal_mode}")
+            self._local.connection.execute(f"PRAGMA synchronous = {self.config.synchronous}")
+        return self._local.connection
     
     def close(self):
-        """Close the database connection"""
-        if self._connection:
-            self._connection.close()
-            self._connection = None
+        """Close the database connection for the current thread"""
+        if hasattr(self._local, 'connection') and self._local.connection:
+            self._local.connection.close()
+            self._local.connection = None
     
     def __enter__(self):
         """Context manager entry"""
@@ -411,6 +412,31 @@ class BTHomeDatabase:
             return dict(row)
         return None
     
+    def get_device_by_id(self, device_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get device information by database ID.
+        
+        Args:
+            device_id: Database ID of the device
+            
+        Returns:
+            Device dictionary or None if not found
+        """
+        self._ensure_initialized()
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT id, address, name, first_seen, last_seen, advertisement_count 
+               FROM devices WHERE id = ?""",
+            (device_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            return dict(row)
+        return None
+    
     def get_devices(self) -> List[Dict[str, Any]]:
         """
         Get all devices.
@@ -497,7 +523,7 @@ class BTHomeDatabase:
         cursor = conn.cursor()
         
         query = """
-            SELECT sr.id, sr.advertisement_id, sr.position, sr.object_id, 
+            SELECT sr.id, sr.advertisement_id, sr.device_id, sr.position, sr.object_id, 
                    sr.name, sr.value, sr.value_text, sr.unit,
                    sr.timestamp, d.address, d.name as device_name
             FROM sensor_readings sr
