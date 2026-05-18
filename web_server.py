@@ -23,8 +23,11 @@ Options:
 import argparse
 from flask import Flask, render_template_string, request, jsonify
 from database import BTHomeDatabase
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import logging
+import math
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,6 +36,110 @@ app = Flask(__name__)
 
 # Global database instance (will be initialized after parsing args)
 db: Optional[BTHomeDatabase] = None
+
+
+def calculate_quartiles(values: List[float]) -> Tuple[float, float, float, float, float]:
+    """
+    Calculate box plot statistics from a list of values.
+    
+    Returns: (min, q1, median, q3, max)
+    """
+    if not values:
+        return (0, 0, 0, 0, 0)
+    
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    
+    min_val = sorted_values[0]
+    max_val = sorted_values[-1]
+    
+    def get_quartile(pos):
+        """Get value at a specific position using linear interpolation"""
+        if n == 0:
+            return 0
+        integer_pos = int(pos)
+        fractional = pos - integer_pos
+        if integer_pos + 1 < n:
+            return sorted_values[integer_pos] + fractional * (sorted_values[integer_pos + 1] - sorted_values[integer_pos])
+        return sorted_values[integer_pos]
+    
+    q1 = get_quartile((n - 1) * 0.25)
+    median = get_quartile((n - 1) * 0.5)
+    q3 = get_quartile((n - 1) * 0.75)
+    
+    return (min_val, q1, median, q3, max_val)
+
+
+def aggregate_readings(readings: List[Dict[str, Any]], time_range_seconds: float) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Aggregate sensor readings based on the time range.
+    
+    Args:
+        readings: List of sensor reading dictionaries with 'timestamp' and 'value' keys
+        time_range_seconds: The total time range in seconds
+    
+    Returns:
+        Tuple of (aggregated_data, aggregation_label)
+        where aggregated_data is a list of dicts with box plot stats for each interval
+    """
+    if not readings:
+        return [], ""
+    
+    # Determine aggregation interval based on time range
+    if time_range_seconds <= 24 * 60 * 60:  # <= 1 day
+        interval_seconds = 60 * 60  # 1 hour
+        label = "hourly"
+    elif time_range_seconds <= 7 * 24 * 60 * 60:  # <= 1 week
+        interval_seconds = 6 * 60 * 60  # 6 hours
+        label = "6-hourly"
+    elif time_range_seconds <= 30 * 24 * 60 * 60:  # <= 1 month
+        interval_seconds = 24 * 60 * 60  # 1 day
+        label = "daily"
+    else:
+        interval_seconds = 7 * 24 * 60 * 60  # 1 week
+        label = "weekly"
+    
+    # Group readings by interval
+    intervals = defaultdict(list)
+    
+    for reading in readings:
+        timestamp = reading['timestamp']
+        # Parse timestamp (assuming ISO 8601 format)
+        try:
+            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        except:
+            dt = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
+        
+        # Calculate interval start
+        epoch = datetime(1970, 1, 1)
+        timestamp_seconds = (dt - epoch).total_seconds()
+        interval_start_seconds = (timestamp_seconds // interval_seconds) * interval_seconds
+        interval_start = epoch + timedelta(seconds=interval_start_seconds)
+        
+        intervals[interval_start].append(reading['value'])
+    
+    # Calculate box plot stats for each interval
+    aggregated = []
+    for interval_start, values in sorted(intervals.items()):
+        # Filter out None values
+        valid_values = [v for v in values if v is not None]
+        
+        if valid_values:
+            min_val, q1, median, q3, max_val = calculate_quartiles(valid_values)
+            interval_str = interval_start.strftime('%Y-%m-%d %H:%M:%S')
+            
+            aggregated.append({
+                'timestamp': interval_str,
+                'min': min_val,
+                'q1': q1,
+                'median': median,
+                'q3': q3,
+                'max': max_val,
+                'count': len(valid_values),
+                'values': valid_values
+            })
+    
+    return aggregated, label
 
 
 HTML_TEMPLATE = """
@@ -230,6 +337,13 @@ HTML_TEMPLATE = """
         
         <div class="card" id="sensorDataCard" style="display: none;">
             <h2>Sensor Data</h2>
+            <div style="margin-bottom: 15px;">
+                <label style="display: inline-block; margin-right: 10px;">Display Mode:</label>
+                <select id="displayMode" style="display: inline-block; width: auto; padding: 5px;">
+                    <option value="line">Line Chart</option>
+                    <option value="boxplot">Box Plot</option>
+                </select>
+            </div>
             <div class="chart-container">
                 <canvas id="sensorChart"></canvas>
             </div>
@@ -244,11 +358,14 @@ HTML_TEMPLATE = """
         const timeFilterCard = document.getElementById('timeFilterCard');
         const positionsList = document.getElementById('positionsList');
         const sensorDataInfo = document.getElementById('sensorDataInfo');
+        const displayModeSelect = document.getElementById('displayMode');
         
         let currentDevice = null;
         let currentDeviceId = null;
         let currentPosition = null;
         let sensorChart = null;
+        let currentDisplayMode = 'line';
+        let currentRawData = null;
         
         // Time range filter elements
         const timeRangeSelect = document.getElementById('timeRange');
@@ -321,6 +438,16 @@ HTML_TEMPLATE = """
             });
         });
         
+        // Display mode change handler
+        if (displayModeSelect) {
+            displayModeSelect.addEventListener('change', function() {
+                currentDisplayMode = this.value;
+                if (currentDeviceId && currentPosition) {
+                    loadPositionData(currentDeviceId, currentPosition);
+                }
+            });
+        }
+        
         function getTimeRange() {
             const range = timeRangeSelect?.value || 'lastDay';
             const now = new Date();
@@ -355,91 +482,254 @@ HTML_TEMPLATE = """
             // Get time range based on selection
             const { startTime, endTime } = getTimeRange();
             
-            let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
-            if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
-            if (endTime) url += `end_time=${encodeURIComponent(endTime)}&`;
+            // Get current display mode
+            currentDisplayMode = displayModeSelect?.value || 'line';
             
-            const response = await fetch(url);
-            const data = await response.json();
-            
-            if (data.length === 0) {
-                sensorDataInfo.innerHTML = '<div class="empty-state">No data found for this position with the specified filters</div>';
-                sensorDataCard.style.display = 'block';
-                return;
-            }
-            
-            // Prepare chart data
-            const timestamps = data.map(r => new Date(r.timestamp));
-            const values = data.map(r => r.value !== null ? r.value : (r.value_text ? parseFloat(r.value_text) || 0 : 0));
-            
-            // Destroy existing chart if it exists
-            if (sensorChart) {
-                sensorChart.destroy();
-            }
-            
-            const ctx = document.getElementById('sensorChart').getContext('2d');
-            sensorChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: timestamps,
-                    datasets: [{
-                        label: `${sensorName}${unit ? ` (${unit})` : ''}`,
-                        data: values,
-                        borderColor: '#4CAF50',
-                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'minute',
-                                displayFormats: {
-                                    minute: 'HH:mm',
-                                    hour: 'HH:mm'
+            if (currentDisplayMode === 'boxplot') {
+                // Load box plot data
+                let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}/boxplot?`;
+                if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
+                if (endTime) url += `end_time=${encodeURIComponent(endTime)}&`;
+                
+                const response = await fetch(url);
+                const result = await response.json();
+                
+                if (!result.data || result.data.length === 0) {
+                    sensorDataInfo.innerHTML = '<div class="empty-state">No data found for this position with the specified filters</div>';
+                    sensorDataCard.style.display = 'block';
+                    return;
+                }
+                
+                // Prepare box plot chart data
+                const timestamps = result.data.map(r => new Date(r.timestamp));
+                const minValues = result.data.map(r => r.min);
+                const q1Values = result.data.map(r => r.q1);
+                const medianValues = result.data.map(r => r.median);
+                const q3Values = result.data.map(r => r.q3);
+                const maxValues = result.data.map(r => r.max);
+                
+                // Destroy existing chart if it exists
+                if (sensorChart) {
+                    sensorChart.destroy();
+                }
+                
+                const ctx = document.getElementById('sensorChart').getContext('2d');
+                
+                // Create box plot chart using bar chart with custom styling
+                sensorChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: timestamps.map((t, i) => i),
+                        datasets: [
+                            {
+                                label: 'Min',
+                                data: minValues,
+                                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                                borderColor: 'rgba(76, 175, 80, 0.1)',
+                                borderWidth: 0,
+                                stack: 'boxplot',
+                                order: 1
+                            },
+                            {
+                                label: 'Q1 to Q3',
+                                data: q1Values.map((q1, i) => q3Values[i] - q1),
+                                backgroundColor: 'rgba(76, 175, 80, 0.3)',
+                                borderColor: '#4CAF50',
+                                borderWidth: 1,
+                                stack: 'boxplot',
+                                order: 2
+                            },
+                            {
+                                label: 'Max',
+                                data: maxValues.map((max, i) => max - q3Values[i]),
+                                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                                borderColor: 'rgba(76, 175, 80, 0.1)',
+                                borderWidth: 0,
+                                stack: 'boxplot',
+                                order: 3
+                            },
+                            {
+                                label: 'Median',
+                                data: medianValues,
+                                type: 'line',
+                                borderColor: '#4CAF50',
+                                borderWidth: 2,
+                                backgroundColor: 'transparent',
+                                pointRadius: 0,
+                                fill: false,
+                                order: 0
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                type: 'linear',
+                                position: 'bottom',
+                                title: {
+                                    display: true,
+                                    text: 'Time Intervals'
+                                },
+                                ticks: {
+                                    callback: function(value, index, values) {
+                                        if (index >= timestamps.length) return '';
+                                        // Format based on aggregation level
+                                        if (result.aggregation === 'hourly') {
+                                            return timestamps[index].toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                                        } else if (result.aggregation === '6-hourly') {
+                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + timestamps[index].toLocaleTimeString([], {hour: '2-digit'});
+                                        } else if (result.aggregation === 'daily') {
+                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'});
+                                        } else {
+                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'});
+                                        }
+                                    },
+                                    maxRotation: 45,
+                                    minRotation: 45
                                 }
                             },
-                            title: {
-                                display: true,
-                                text: 'Time'
-                            },
-                            ticks: {
-                                maxRotation: 45,
-                                minRotation: 45
+                            y: {
+                                title: {
+                                    display: true,
+                                    text: `${sensorName}${unit ? ` (${unit})` : ''}`
+                                },
+                                beginAtZero: false
                             }
                         },
-                        y: {
-                            title: {
+                        plugins: {
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const datasetLabel = context.dataset.label || '';
+                                        const value = context.raw || 0;
+                                        if (datasetLabel === 'Median') {
+                                            return `Median: ${value.toFixed(2)} ${unit}`;
+                                        } else if (datasetLabel === 'Q1 to Q3') {
+                                            const q1 = q1Values[context.dataIndex];
+                                            const q3 = q3Values[context.dataIndex];
+                                            return `Q1: ${q1.toFixed(2)} - Q3: ${q3.toFixed(2)} ${unit}`;
+                                        } else if (datasetLabel === 'Min') {
+                                            return `Min: ${value.toFixed(2)} ${unit}`;
+                                        } else if (datasetLabel === 'Max') {
+                                            const max = maxValues[context.dataIndex];
+                                            const q3 = q3Values[context.dataIndex];
+                                            return `Q3: ${q3.toFixed(2)} - Max: ${max.toFixed(2)} ${unit}`;
+                                        }
+                                        return `${datasetLabel}: ${value} ${unit}`;
+                                    },
+                                    afterLabel: function(context) {
+                                        if (context.dataset.label === 'Median' && context.dataIndex < timestamps.length) {
+                                            const dataPoint = result.data[context.dataIndex];
+                                            return `Count: ${dataPoint.count} readings`;
+                                        }
+                                        return null;
+                                    }
+                                }
+                            },
+                            legend: {
                                 display: true,
-                                text: `${sensorName}${unit ? ` (${unit})` : ''}`
+                                position: 'top'
                             }
                         }
+                    }
+                });
+                
+                // Show info
+                sensorDataInfo.innerHTML = `<p>Showing box plot for ${sensorName} (${result.aggregation} aggregation) with ${result.data.reduce((sum, d) => sum + d.count, 0)} total readings</p>`;
+                sensorDataCard.style.display = 'block';
+            } else {
+                // Load raw data for line chart
+                let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
+                if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
+                if (endTime) url += `end_time=${encodeURIComponent(endTime)}&`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.length === 0) {
+                    sensorDataInfo.innerHTML = '<div class="empty-state">No data found for this position with the specified filters</div>';
+                    sensorDataCard.style.display = 'block';
+                    return;
+                }
+                
+                // Store raw data for potential future use
+                currentRawData = data;
+                
+                // Prepare chart data
+                const timestamps = data.map(r => new Date(r.timestamp));
+                const values = data.map(r => r.value !== null ? r.value : (r.value_text ? parseFloat(r.value_text) || 0 : 0));
+                
+                // Destroy existing chart if it exists
+                if (sensorChart) {
+                    sensorChart.destroy();
+                }
+                
+                const ctx = document.getElementById('sensorChart').getContext('2d');
+                sensorChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: timestamps,
+                        datasets: [{
+                            label: `${sensorName}${unit ? ` (${unit})` : ''}`,
+                            data: values,
+                            borderColor: '#4CAF50',
+                            backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.1
+                        }]
                     },
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return `${sensorName}: ${context.raw} ${unit}`;
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'minute',
+                                    displayFormats: {
+                                        minute: 'HH:mm',
+                                        hour: 'HH:mm'
+                                    }
                                 },
-                                afterLabel: function(context) {
-                                    const timestamp = timestamps[context.dataIndex];
-                                    return `Time: ${timestamp.toLocaleString()}`;
+                                title: {
+                                    display: true,
+                                    text: 'Time'
+                                },
+                                ticks: {
+                                    maxRotation: 45,
+                                    minRotation: 45
+                                }
+                            },
+                            y: {
+                                title: {
+                                    display: true,
+                                    text: `${sensorName}${unit ? ` (${unit})` : ''}`
+                                }
+                            }
+                        },
+                        plugins: {
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `${sensorName}: ${context.raw} ${unit}`;
+                                    },
+                                    afterLabel: function(context) {
+                                        const timestamp = timestamps[context.dataIndex];
+                                        return `Time: ${timestamp.toLocaleString()}`;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
-            
-            // Show info
-            sensorDataInfo.innerHTML = `<p>Showing ${data.length} readings for ${sensorName}</p>`;
-            sensorDataCard.style.display = 'block';
+                });
+                
+                // Show info
+                sensorDataInfo.innerHTML = `<p>Showing ${data.length} readings for ${sensorName}</p>`;
+                sensorDataCard.style.display = 'block';
+            }
         }
     </script>
 </body>
@@ -557,6 +847,61 @@ def api_sensor_data(device_id, position):
     } for r in filtered]
     
     return jsonify(simplified)
+
+
+@app.route('/api/sensor/<int:device_id>/<int:position>/boxplot')
+def api_sensor_boxplot(device_id, position):
+    """API endpoint: get box plot data for a specific device and position
+    
+    Returns aggregated box plot statistics based on the time range:
+    - Per 1 hour if time frame <= 1 day
+    - Per 6 hours if time frame <= 1 week
+    - Per 1 day if time frame <= 1 month
+    - Per week otherwise
+    
+    Required query parameters:
+    - start_time: Filter by start timestamp (ISO 8601 format)
+    - end_time: Filter by end timestamp (ISO 8601 format)
+    """
+    start_time = request.args.get('start_time')
+    end_time = request.args.get('end_time')
+    
+    # Validate required parameters
+    if not start_time or not end_time:
+        return jsonify({'error': 'Both start_time and end_time query parameters are required'}), 400
+    
+    # Parse time range to calculate duration
+    try:
+        start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+    except:
+        try:
+            start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+            end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            return jsonify({'error': f'Invalid timestamp format: {str(e)}'}), 400
+    
+    time_range_seconds = (end_dt - start_dt).total_seconds()
+    
+    # Get all sensor readings for this device and position
+    all_readings = db.get_sensor_readings(device_address=None)
+    
+    # Filter by device_id and position
+    filtered = [r for r in all_readings if r['device_id'] == device_id and r['position'] == position]
+    
+    # Apply mandatory time filters
+    filtered = [r for r in filtered if r['timestamp'] >= start_time and r['timestamp'] <= end_time]
+    
+    # Sort by timestamp
+    filtered.sort(key=lambda x: x['timestamp'])
+    
+    # Aggregate readings
+    aggregated, aggregation_label = aggregate_readings(filtered, time_range_seconds)
+    
+    return jsonify({
+        'aggregation': aggregation_label,
+        'data': aggregated
+    })
 
 
 @app.route('/api/statistics')
