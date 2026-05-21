@@ -11,6 +11,7 @@ Database Schema:
     - sensor_readings: Individual sensor readings from advertisements
     - binary_sensor_readings: Binary sensor readings from advertisements
     - events: Event data from advertisements
+    - schema_migrations: Tracks applied database migrations
 """
 
 import sqlite3
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Default database path
 DEFAULT_DB_PATH = "bthome_data.db"
+
+# Current schema version
+SCHEMA_VERSION = "1.0"
 
 
 @dataclass
@@ -100,12 +104,28 @@ class BTHomeDatabase:
         Initialize the database schema.
         
         Creates all necessary tables if they don't exist.
+        Also runs any pending database migrations.
         """
+        # Run migrations first to ensure schema_migrations table exists
+        self._run_migrations()
+        
         conn = self._get_connection()
         cursor = conn.cursor()
         
         # Create tables
         cursor.executescript("""
+            -- Schema migrations tracking table
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+                checksum TEXT
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_schema_migrations_version 
+            ON schema_migrations(version);
+            
             -- Devices table: stores device metadata
             CREATE TABLE IF NOT EXISTS devices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,6 +229,54 @@ class BTHomeDatabase:
         conn.commit()
         self._initialized = True
         logger.info(f"Database initialized at {self.db_path}")
+    
+    def _run_migrations(self):
+        """
+        Run database migrations.
+        
+        This method ensures the schema_migrations table exists and runs any
+        pending migrations before the main schema is initialized.
+        """
+        try:
+            # Import here to avoid circular imports
+            from migrations import MigrationManager
+            
+            # Create migration manager and run migrations
+            migration_manager = MigrationManager(self.db_path)
+            migration_manager.run_migrations()
+            migration_manager.close()
+            
+            logger.info("Database migrations completed")
+        except ImportError as e:
+            # If migrations module doesn't exist, log a warning but continue
+            logger.warning(f"Migrations module not available: {e}")
+        except Exception as e:
+            # Log migration errors but don't fail initialization
+            logger.error(f"Error running migrations: {e}")
+    
+    def get_migration_status(self) -> Dict[str, Any]:
+        """
+        Get the current migration status.
+        
+        Returns:
+            Dictionary with migration status information
+        """
+        try:
+            from migrations import MigrationManager
+            
+            migration_manager = MigrationManager(self.db_path)
+            status = migration_manager.get_migration_status()
+            migration_manager.close()
+            return status
+        except ImportError:
+            return {
+                'applied_count': 0,
+                'available_count': 0,
+                'pending_count': 0,
+                'applied_versions': [],
+                'pending_versions': [],
+                'migrations_table_exists': False
+            }
     
     def _ensure_initialized(self):
         """Ensure database is initialized"""
