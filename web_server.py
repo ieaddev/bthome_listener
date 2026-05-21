@@ -809,6 +809,7 @@ HTML_TEMPLATE = """
                 sensorDataInfo.innerHTML = `<p>Showing ${data.length} readings for ${sensorName}</p>`;
                 sensorDataCard.style.display = 'block';
             }
+        }
     </script>
 </body>
 </html>
