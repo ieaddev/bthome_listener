@@ -348,9 +348,6 @@ HTML_TEMPLATE = """
                     <label for="deviceSelect">Device:</label>
                     <select id="deviceSelect" name="device" required>
                         <option value="">-- Select a device --</option>
-                        {% for device in devices %}
-                        <option value="{{ device.address }}">{{ device.name or device.address }}</option>
-                        {% endfor %}
                     </select>
                 </div>
                 <button type="submit">Load Positions</button>
@@ -425,6 +422,33 @@ HTML_TEMPLATE = """
         // Time range filter elements
         const timeRangeSelect = document.getElementById('timeRange');
         const customRangeContainer = document.getElementById('customRangeContainer');
+        
+        // Populate device dropdown on page load
+        async function populateDeviceDropdown() {
+            try {
+                const response = await fetch(`${baseUrl}/api/devices`);
+                const devices = await response.json();
+                
+                const deviceSelect = document.getElementById('deviceSelect');
+                // Clear existing options except the default one
+                while (deviceSelect.options.length > 1) {
+                    deviceSelect.remove(1);
+                }
+                
+                // Add devices to dropdown
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.address;
+                    option.textContent = device.name || device.address;
+                    deviceSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading devices:', error);
+            }
+        }
+        
+        // Load devices when page loads
+        document.addEventListener('DOMContentLoaded', populateDeviceDropdown);
         
         // Load positions for selected device
         deviceForm.addEventListener('submit', async (e) => {
@@ -794,8 +818,7 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     """Main page - show device list"""
-    devices = db.get_devices()
-    return render_template_string(HTML_TEMPLATE, devices=devices, base_url=request.script_root)
+    return render_template_string(HTML_TEMPLATE, base_url=request.script_root)
 
 
 @app.route('/api/devices')
