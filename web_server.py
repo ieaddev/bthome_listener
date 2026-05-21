@@ -8,8 +8,13 @@ stored in the SQLite database. Users can:
 - Select an advertisement from that device
 - View the time series data for that advertisement
 
-Usage:
+Usage (Development):
     python web_server.py [--database PATH] [--host HOST] [--port PORT] [--env ENVIRONMENT] [--debug] [--threaded]
+
+Usage (Production with Gunicorn):
+    gunicorn --bind 0.0.0.0:5000 --workers 4 wsgi:app
+    # Or use the convenience script:
+    ./run_gunicorn.sh
 
 Options:
     --database PATH    Path to SQLite database (default: bthome_data.db)
@@ -18,9 +23,14 @@ Options:
     --env ENVIRONMENT  Environment mode: development, dev, production, prod (default: production)
     --debug            Enable debug mode (deprecated: use --env development instead)
     --threaded         Enable threaded mode for production
+
+Environment Variables (for WSGI):
+    BTHOME_DATABASE    Path to SQLite database (default: bthome_data.db)
+    BTHOME_ENV          Environment mode: development, dev, production, prod (default: production)
 """
 
 import argparse
+import os
 from flask import Flask, render_template_string, request, jsonify
 from database import BTHomeDatabase
 from typing import List, Dict, Any, Optional
@@ -31,8 +41,50 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Global database instance (will be initialized after parsing args)
+# Global database instance (will be initialized after parsing args or via create_app)
 db: Optional[BTHomeDatabase] = None
+
+
+def create_app(db_path: str = 'bthome_data.db', env: str = 'production', 
+               host: str = '0.0.0.0', port: int = 5000) -> Flask:
+    """
+    Factory function to create and configure the Flask application.
+    
+    This allows the app to be used with WSGI servers like Gunicorn.
+    
+    Args:
+        db_path: Path to SQLite database file
+        env: Environment mode (development, dev, production, prod)
+        host: Host to bind to
+        port: Port to listen on
+        
+    Returns:
+        Configured Flask application
+    """
+    global db
+    
+    # Validate environment
+    valid_envs = ['development', 'dev', 'production', 'prod']
+    if env not in valid_envs:
+        logger.warning(f"Invalid environment: {env}. Using 'production' as fallback.")
+        env = 'production'
+    
+    # Determine debug mode
+    debug_mode = env in ['development', 'dev']
+    
+    # Log mode
+    if debug_mode:
+        logger.warning("Running in DEVELOPMENT mode - do not use in production!")
+    else:
+        logger.info("Running in PRODUCTION mode")
+    
+    # Initialize database
+    db = BTHomeDatabase(db_path=db_path)
+    db.initialize()
+    
+    logger.info(f"Using database: {db_path}")
+    
+    return app
 
 
 HTML_TEMPLATE = """
@@ -42,9 +94,9 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BTHome Sensor Data Viewer</title>
-    <script src="/static/js/luxon.min.js"></script>
-    <script src="/static/js/chart.umd.min.js"></script>
-    <script src="/static/js/chartjs-adapter-luxon.min.js"></script>
+    <script src="{{ base_url }}/static/js/luxon.min.js"></script>
+    <script src="{{ base_url }}/static/js/chart.umd.min.js"></script>
+    <script src="{{ base_url }}/static/js/chartjs-adapter-luxon.min.js"></script>
     <script>
         // Register luxon adapter for time axis
         Chart.register(ChartjsAdapterLuxon);
@@ -238,6 +290,9 @@ HTML_TEMPLATE = """
     </div>
     
     <script>
+        // Base URL for API requests - respects reverse proxy mount path
+        const baseUrl = '{{ base_url }}';
+        
         const deviceForm = document.getElementById('deviceForm');
         const positionsCard = document.getElementById('positionsCard');
         const sensorDataCard = document.getElementById('sensorDataCard');
@@ -262,7 +317,7 @@ HTML_TEMPLATE = """
             if (!currentDevice) return;
             
             // Get device ID
-            const deviceResponse = await fetch(`/api/devices`);
+            const deviceResponse = await fetch(`${baseUrl}/api/devices`);
             const devices = await deviceResponse.json();
             const device = devices.find(d => d.address === currentDevice);
             currentDeviceId = device ? device.id : null;
@@ -290,7 +345,7 @@ HTML_TEMPLATE = """
                 });
             }
             
-            const response = await fetch(`/api/device/${encodeURIComponent(currentDeviceId)}/positions`);
+            const response = await fetch(`${baseUrl}/api/device/${encodeURIComponent(currentDeviceId)}/positions`);
             const positions = await response.json();
             
             if (positions.length === 0) {
@@ -355,7 +410,7 @@ HTML_TEMPLATE = """
             // Get time range based on selection
             const { startTime, endTime } = getTimeRange();
             
-            let url = `/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
+            let url = `${baseUrl}/api/sensor/${encodeURIComponent(deviceId)}/${position}?`;
             if (startTime) url += `start_time=${encodeURIComponent(startTime)}&`;
             if (endTime) url += `end_time=${encodeURIComponent(endTime)}&`;
             
@@ -451,7 +506,7 @@ HTML_TEMPLATE = """
 def index():
     """Main page - show device list"""
     devices = db.get_devices()
-    return render_template_string(HTML_TEMPLATE, devices=devices)
+    return render_template_string(HTML_TEMPLATE, devices=devices, base_url=request.script_root)
 
 
 @app.route('/api/devices')
@@ -623,9 +678,8 @@ def main():
     else:
         logger.info("Running in PRODUCTION mode")
     
-    # Initialize database
-    db = BTHomeDatabase(db_path=args.database)
-    db.initialize()
+    # Create app using factory - this initializes the database
+    app = create_app(db_path=args.database, env=args.env)
     
     logger.info(f"Starting BTHome Web Server on {args.host}:{args.port}")
     logger.info(f"Using database: {args.database}")
