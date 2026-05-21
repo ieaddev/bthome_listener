@@ -208,8 +208,8 @@ HTML_TEMPLATE = """
     <script>
         // Register luxon adapter for time axis
         Chart.register(ChartjsAdapterLuxon);
-        // Register box plot plugin
-        Chart.register(ChartjsChartBoxAndViolinPlot);
+        // Register box plot plugin with required scales
+        Chart.register(BoxPlotController, BoxAndWiskers, Chart.CategoryScale, Chart.LinearScale);
     </script>
     <style>
         body {
@@ -598,13 +598,13 @@ HTML_TEMPLATE = """
                 const ctx = document.getElementById('sensorChart').getContext('2d');
                 
                 // Prepare data for box plot chart using the boxplot plugin
-                // The plugin expects data in the format: [min, q1, median, q3, max]
+                // The plugin expects data with: min, q1, median, q3, max
                 const boxplotData = timestamps.map((timestamp, i) => ({
-                    l: minValues[i],  // min (lower whisker)
+                    min: minValues[i],
                     q1: q1Values[i],
-                    q2: medianValues[i],  // median (q2)
+                    median: medianValues[i],
                     q3: q3Values[i],
-                    h: maxValues[i]   // max (upper whisker)
+                    max: maxValues[i]
                 }));
                 
                 // Create box plot chart using the boxplot plugin
@@ -628,7 +628,7 @@ HTML_TEMPLATE = """
                         maintainAspectRatio: false,
                         scales: {
                             x: {
-                                type: 'linear',
+                                type: 'category',
                                 position: 'bottom',
                                 title: {
                                     display: true,
