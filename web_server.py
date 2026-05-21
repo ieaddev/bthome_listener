@@ -204,9 +204,12 @@ HTML_TEMPLATE = """
     <script src="{{ base_url }}/static/js/luxon.min.js"></script>
     <script src="{{ base_url }}/static/js/chart.umd.min.js"></script>
     <script src="{{ base_url }}/static/js/chartjs-adapter-luxon.min.js"></script>
+    <script src="{{ base_url }}/static/js/chartjs-chart-box-and-violin-plot.min.js"></script>
     <script>
         // Register luxon adapter for time axis
         Chart.register(ChartjsAdapterLuxon);
+        // Register box plot plugin
+        Chart.register(ChartjsChartBoxAndViolinPlot);
     </script>
     <style>
         body {
@@ -594,51 +597,31 @@ HTML_TEMPLATE = """
                 
                 const ctx = document.getElementById('sensorChart').getContext('2d');
                 
-                // Create box plot chart using bar chart with custom styling
+                // Prepare data for box plot chart using the boxplot plugin
+                // The plugin expects data in the format: [min, q1, median, q3, max]
+                const boxplotData = timestamps.map((timestamp, i) => ({
+                    l: minValues[i],  // min (lower whisker)
+                    q1: q1Values[i],
+                    q2: medianValues[i],  // median (q2)
+                    q3: q3Values[i],
+                    h: maxValues[i]   // max (upper whisker)
+                }));
+                
+                // Create box plot chart using the boxplot plugin
                 sensorChart = new Chart(ctx, {
-                    type: 'bar',
+                    type: 'boxplot',
                     data: {
                         labels: timestamps.map((t, i) => i),
-                        datasets: [
-                            {
-                                label: 'Min',
-                                data: minValues,
-                                backgroundColor: 'rgba(76, 175, 80, 0.1)',
-                                borderColor: 'rgba(76, 175, 80, 0.1)',
-                                borderWidth: 0,
-                                stack: 'boxplot',
-                                order: 1
-                            },
-                            {
-                                label: 'Q1 to Q3',
-                                data: q1Values.map((q1, i) => q3Values[i] - q1),
-                                backgroundColor: 'rgba(76, 175, 80, 0.3)',
-                                borderColor: '#4CAF50',
-                                borderWidth: 1,
-                                stack: 'boxplot',
-                                order: 2
-                            },
-                            {
-                                label: 'Max',
-                                data: maxValues.map((max, i) => max - q3Values[i]),
-                                backgroundColor: 'rgba(76, 175, 80, 0.1)',
-                                borderColor: 'rgba(76, 175, 80, 0.1)',
-                                borderWidth: 0,
-                                stack: 'boxplot',
-                                order: 3
-                            },
-                            {
-                                label: 'Median',
-                                data: medianValues,
-                                type: 'line',
-                                borderColor: '#4CAF50',
-                                borderWidth: 2,
-                                backgroundColor: 'transparent',
-                                pointRadius: 0,
-                                fill: false,
-                                order: 0
-                            }
-                        ]
+                        datasets: [{
+                            label: `${sensorName}${unit ? ` (${unit})` : ''}`,
+                            data: boxplotData,
+                            backgroundColor: 'rgba(76, 175, 80, 0.2)',
+                            borderColor: '#4CAF50',
+                            borderWidth: 1,
+                            outlierColor: '#FF0000',
+                            padding: 10,
+                            itemStyle: 'normal'
+                        }]
                     },
                     options: {
                         responsive: true,
@@ -681,29 +664,15 @@ HTML_TEMPLATE = """
                             tooltip: {
                                 callbacks: {
                                     label: function(context) {
-                                        const datasetLabel = context.dataset.label || '';
-                                        const value = context.raw || 0;
-                                        if (datasetLabel === 'Median') {
-                                            return `Median: ${value.toFixed(2)} ${unit}`;
-                                        } else if (datasetLabel === 'Q1 to Q3') {
-                                            const q1 = q1Values[context.dataIndex];
-                                            const q3 = q3Values[context.dataIndex];
-                                            return `Q1: ${q1.toFixed(2)} - Q3: ${q3.toFixed(2)} ${unit}`;
-                                        } else if (datasetLabel === 'Min') {
-                                            return `Min: ${value.toFixed(2)} ${unit}`;
-                                        } else if (datasetLabel === 'Max') {
-                                            const max = maxValues[context.dataIndex];
-                                            const q3 = q3Values[context.dataIndex];
-                                            return `Q3: ${q3.toFixed(2)} - Max: ${max.toFixed(2)} ${unit}`;
-                                        }
-                                        return `${datasetLabel}: ${value} ${unit}`;
-                                    },
-                                    afterLabel: function(context) {
-                                        if (context.dataset.label === 'Median' && context.dataIndex < timestamps.length) {
-                                            const dataPoint = result.data[context.dataIndex];
-                                            return `Count: ${dataPoint.count} readings`;
-                                        }
-                                        return null;
+                                        const dataPoint = result.data[context.dataIndex];
+                                        return [
+                                            `Min: ${dataPoint.min.toFixed(2)} ${unit}`,
+                                            `Q1: ${dataPoint.q1.toFixed(2)} ${unit}`,
+                                            `Median: ${dataPoint.median.toFixed(2)} ${unit}`,
+                                            `Q3: ${dataPoint.q3.toFixed(2)} ${unit}`,
+                                            `Max: ${dataPoint.max.toFixed(2)} ${unit}`,
+                                            `Count: ${dataPoint.count} readings`
+                                        ];
                                     }
                                 }
                             },
