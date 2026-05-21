@@ -407,6 +407,22 @@ HTML_TEMPLATE = """
         // Base URL for API requests - respects reverse proxy mount path
         const baseUrl = '{{ base_url }}';
         
+        // Helper function to parse timestamp strings and convert to local DateTime
+        function parseTimestamp(ts) {
+            // If timestamp is already a string with timezone info, parse it
+            // The database stores timestamps in UTC ISO format (e.g., "2024-01-01T12:00:00+00:00")
+            // Luxon will parse this correctly and we can convert to local timezone
+            if (typeof ts === 'string') {
+                return luxon.DateTime.fromISO(ts).toLocal();
+            }
+            // If it's already a Date object
+            if (ts instanceof Date) {
+                return luxon.DateTime.fromJSDate(ts).toLocal();
+            }
+            // Fallback
+            return luxon.DateTime.fromJSDate(new Date(ts)).toLocal();
+        }
+        
         const deviceForm = document.getElementById('deviceForm');
         const positionsCard = document.getElementById('positionsCard');
         const sensorDataCard = document.getElementById('sensorDataCard');
@@ -536,9 +552,31 @@ HTML_TEMPLATE = """
             let startTime = null;
             let endTime = null;
             
+            // Helper to convert local datetime string to UTC ISO string
+            function localToUTC(localDateTimeStr) {
+                if (!localDateTimeStr) return null;
+                // Parse the local datetime string (format: "YYYY-MM-DDTHH:mm:ss")
+                // This is in the browser's local timezone
+                const localDate = new Date(localDateTimeStr);
+                // Convert to UTC ISO string
+                return localDate.toISOString().slice(0, 19);
+            }
+            
             if (range === 'custom') {
-                startTime = document.getElementById('startTime')?.value || new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
-                endTime = document.getElementById('endTime')?.value || now.toISOString().slice(0, 19);
+                const startInput = document.getElementById('startTime')?.value;
+                const endInput = document.getElementById('endTime')?.value;
+                
+                if (startInput) {
+                    startTime = localToUTC(startInput);
+                } else {
+                    startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+                }
+                
+                if (endInput) {
+                    endTime = localToUTC(endInput);
+                } else {
+                    endTime = now.toISOString().slice(0, 19);
+                }
             } else if (range === 'lastDay') {
                 startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
                 endTime = now.toISOString().slice(0, 19);
@@ -582,8 +620,8 @@ HTML_TEMPLATE = """
                     return;
                 }
                 
-                // Prepare box plot chart data
-                const timestamps = result.data.map(r => new Date(r.timestamp));
+                // Prepare box plot chart data - parse timestamps and convert to local timezone
+                const timestamps = result.data.map(r => parseTimestamp(r.timestamp));
                 const minValues = result.data.map(r => r.min);
                 const q1Values = result.data.map(r => r.q1);
                 const medianValues = result.data.map(r => r.median);
@@ -637,15 +675,16 @@ HTML_TEMPLATE = """
                                 ticks: {
                                     callback: function(value, index, values) {
                                         if (index >= timestamps.length) return '';
-                                        // Format based on aggregation level
+                                        // Format based on aggregation level using Luxon
+                                        const dt = timestamps[index];
                                         if (result.aggregation === 'hourly') {
-                                            return timestamps[index].toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                                            return dt.toLocaleString({hour: '2-digit', minute: '2-digit'});
                                         } else if (result.aggregation === '6-hourly') {
-                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + timestamps[index].toLocaleTimeString([], {hour: '2-digit'});
+                                            return dt.toLocaleString({month: 'short', day: 'numeric', hour: '2-digit'});
                                         } else if (result.aggregation === 'daily') {
-                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'});
+                                            return dt.toLocaleString({month: 'short', day: 'numeric'});
                                         } else {
-                                            return timestamps[index].toLocaleDateString([], {month: 'short', day: 'numeric'});
+                                            return dt.toLocaleString({month: 'short', day: 'numeric'});
                                         }
                                     },
                                     maxRotation: 45,
@@ -705,8 +744,8 @@ HTML_TEMPLATE = """
                 // Store raw data for potential future use
                 currentRawData = data;
                 
-                // Prepare chart data
-                const timestamps = data.map(r => new Date(r.timestamp));
+                // Prepare chart data - parse timestamps and convert to local timezone
+                const timestamps = data.map(r => parseTimestamp(r.timestamp));
                 const values = data.map(r => r.value !== null ? r.value : (r.value_text ? parseFloat(r.value_text) || 0 : 0));
                 
                 // Destroy existing chart if it exists
@@ -739,8 +778,13 @@ HTML_TEMPLATE = """
                                     unit: 'minute',
                                     displayFormats: {
                                         minute: 'HH:mm',
-                                        hour: 'HH:mm'
-                                    }
+                                        hour: 'HH:mm',
+                                        day: 'MMM d',
+                                        week: 'MMM d',
+                                        month: 'MMM yyyy'
+                                    },
+                                    // Use local timezone for display
+                                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
                                 },
                                 title: {
                                     display: true,
@@ -766,7 +810,7 @@ HTML_TEMPLATE = """
                                     },
                                     afterLabel: function(context) {
                                         const timestamp = timestamps[context.dataIndex];
-                                        return `Time: ${timestamp.toLocaleString()}`;
+                                        return `Time: ${timestamp.toLocaleString(luxon.DateTime.DATETIME_FULL)}`;
                                     }
                                 }
                             }
